@@ -1,5 +1,7 @@
 """Sites and credentials management endpoints."""
 
+from datetime import date, datetime
+
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +13,17 @@ import encryption
 from .deps import get_current_admin
 
 router = APIRouter()
+
+
+def _serialize_timestamp(value: object) -> str:
+    """Convert DB timestamp values to API response strings."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 # =============================================================================
@@ -91,8 +104,8 @@ async def list_sites(admin: dict = Depends(get_current_admin)):
             enabled=bool(s["enabled"]),
             priority=s["priority"],
             credential_count=s["credential_count"],
-            created_at=s["created_at"] or "",
-            updated_at=s["updated_at"] or "",
+            created_at=_serialize_timestamp(s["created_at"]),
+            updated_at=_serialize_timestamp(s["updated_at"]),
         )
         for s in sites
     ]
@@ -177,7 +190,7 @@ async def add_credential(site_id: int, data: CredentialCreate, admin: dict = Dep
         key=cred["key"],
         has_value=True,
         is_encrypted=cred["is_encrypted"],
-        created_at=cred["created_at"] or "",
+        created_at=_serialize_timestamp(cred["created_at"]),
     )
 
 
@@ -441,7 +454,7 @@ def _site_to_response(site: dict) -> SiteResponse:
                 key=c["key"],
                 has_value=bool(c.get("value")),
                 is_encrypted=bool(c["is_encrypted"]),
-                created_at=c["created_at"] or "",
+                created_at=_serialize_timestamp(c["created_at"]),
             )
             for c in site["credentials"]
         ]
@@ -454,6 +467,6 @@ def _site_to_response(site: dict) -> SiteResponse:
         priority=site["priority"],
         proxy_streaming=bool(site.get("proxy_streaming", True)),
         credentials=credentials,
-        created_at=site["created_at"] or "",
-        updated_at=site["updated_at"] or "",
+        created_at=_serialize_timestamp(site["created_at"]),
+        updated_at=_serialize_timestamp(site["updated_at"]),
     )

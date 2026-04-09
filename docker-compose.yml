@@ -1,6 +1,23 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: yattee-postgres
+    environment:
+      POSTGRES_DB: yattee
+      POSTGRES_USER: yattee
+      POSTGRES_PASSWORD: yattee
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U yattee -d yattee"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   yattee-server:
-    build: .
+    # build: .
+    image: yattee-server:psql
     container_name: yattee-server
     ports:
       - "8085:8085"
@@ -9,6 +26,12 @@ services:
       - data:/app/data
     env_file:
       - .env
+    environment:
+      # Comment this out to use default SQLite storage in /app/data/yattee.db
+      DATABASE_URL: postgresql://yattee:yattee@postgres:5432/yattee
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Optional: auto-provisioning env vars (can also be set in .env file)
     # environment:
     #   - ADMIN_USERNAME=admin
@@ -19,3 +42,4 @@ services:
 volumes:
   downloads:
   data:
+  postgres-data:

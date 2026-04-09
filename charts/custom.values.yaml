@@ -1,0 +1,20 @@
+httpRoute:
+  enabled: true
+  annotations: {}
+  parentRefs:
+  - name: traefik-gateway
+    sectionName: websecure
+    namespace: traefik
+  hostnames:
+  - yattee.rke.obara.dev
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /
+    backendRefs:
+    - group: ""
+      kind: Service
+      name: yattee-server
+      namespace: yattee
+      port: 8085

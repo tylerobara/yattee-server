@@ -21,10 +21,10 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def _column_exists(table: str, column: str) -> bool:
-    """Check if a column exists in a SQLite table via PRAGMA table_info."""
+    """Check if a column exists in a table."""
     conn = op.get_bind()
-    result = conn.execute(sa.text(f"PRAGMA table_info({table})"))
-    return any(row[1] == column for row in result)
+    inspector = sa.inspect(conn)
+    return any(col_info.get("name") == column for col_info in inspector.get_columns(table))
 
 
 def _add_column_if_not_exists(table: str, column: str, coltype: str, default: str) -> None:

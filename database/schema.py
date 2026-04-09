@@ -9,6 +9,7 @@ from alembic.runtime.migration import MigrationContext
 from sqlalchemy import create_engine, text
 
 import config
+from database.connection import get_database_url, get_sqlalchemy_database_url, is_postgres
 
 logger = logging.getLogger(__name__)
 
@@ -22,9 +23,8 @@ def _get_alembic_config():
 
 
 def _get_database_url():
-    """Build SQLite database URL."""
-    db_path = os.path.join(config.DATA_DIR, "yattee.db")
-    return f"sqlite:///{db_path}"
+    """Build effective database URL."""
+    return get_database_url()
 
 
 def _get_current_revision(engine):
@@ -37,7 +37,18 @@ def _get_current_revision(engine):
 def _is_fresh_database(engine):
     """Check if this is a fresh database (no tables exist)."""
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='users'"))
+        if is_postgres():
+            result = conn.execute(
+                text(
+                    """
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public' AND table_name = 'users'
+                    """
+                )
+            )
+        else:
+            result = conn.execute(text("SELECT name FROM sqlite_master WHERE type='table' AND name='users'"))
         return result.fetchone() is None
 
 
@@ -51,10 +62,11 @@ def init_db():
     For fresh databases:
         - Runs all migrations from scratch
     """
-    # Ensure data directory exists
-    os.makedirs(config.DATA_DIR, exist_ok=True)
+    # Ensure data directory exists for SQLite mode
+    if not is_postgres():
+        os.makedirs(config.DATA_DIR, exist_ok=True)
 
-    engine = create_engine(_get_database_url())
+    engine = create_engine(get_sqlalchemy_database_url())
     alembic_cfg = _get_alembic_config()
     current_rev = _get_current_revision(engine)
 

@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from database.connection import get_connection
@@ -18,16 +18,16 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
         # Check how many old videos exist before deletion
         cursor.execute(
             """
-            SELECT COUNT(*), MIN(published), MAX(published)
+            SELECT COUNT(*) AS count, MIN(published) AS min_published, MAX(published) AS max_published
             FROM cached_videos
             WHERE channel_id = ? AND site = ?
         """,
             (channel_id, site),
         )
         old_stats = cursor.fetchone()
-        old_count = old_stats[0] if old_stats else 0
-        old_min_date = old_stats[1] if old_stats else None
-        old_max_date = old_stats[2] if old_stats else None
+        old_count = old_stats["count"] if old_stats else 0
+        old_min_date = old_stats["min_published"] if old_stats else None
+        old_max_date = old_stats["max_published"] if old_stats else None
 
         # Delete all old videos for this channel
         cursor.execute(
@@ -61,10 +61,11 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
 
             cursor.execute(
                 """
-                INSERT OR IGNORE INTO cached_videos (channel_id, site, video_id, title, author, author_id,
+                INSERT INTO cached_videos (channel_id, site, video_id, title, author, author_id,
                                            length_seconds, view_count, published, published_text,
                                            thumbnail_url, thumbnail_data, video_url, fetched_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(channel_id, site, video_id) DO NOTHING
             """,
                 (
                     channel_id,
@@ -102,12 +103,13 @@ def cleanup_old_cached_videos(days: int = 30):
     """Remove videos older than X days."""
     with get_connection() as conn:
         cursor = conn.cursor()
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         cursor.execute(
             """
             DELETE FROM cached_videos
-            WHERE fetched_at < datetime('now', ?)
+            WHERE fetched_at < ?
         """,
-            (f"-{days} days",),
+            (cutoff.isoformat(),),
         )
         deleted = cursor.rowcount
         conn.commit()
@@ -274,12 +276,13 @@ def cleanup_stale_watched_channels(days: int = 14) -> int:
     """Remove channels not requested in X days. Returns count of deleted channels."""
     with get_connection() as conn:
         cursor = conn.cursor()
+        cutoff = datetime.now(UTC) - timedelta(days=days)
         cursor.execute(
             """
             DELETE FROM watched_channels
-            WHERE last_requested < datetime('now', ?)
+            WHERE last_requested < ?
         """,
-            (f"-{days} days",),
+            (cutoff.isoformat(),),
         )
         deleted = cursor.rowcount
         conn.commit()
@@ -399,13 +402,14 @@ def get_feed_count_for_channels(channel_ids: List[Dict[str, str]]) -> int:
 
         cursor.execute(
             f"""
-            SELECT COUNT(*)
+            SELECT COUNT(*) AS count
             FROM cached_videos
             WHERE (channel_id, site) IN ({placeholders})
         """,
             params,
         )
-        return cursor.fetchone()[0]
+        row = cursor.fetchone()
+        return int(row["count"] if row else 0)
 
 
 def get_subscription_by_channel_id(channel_id: str) -> Optional[Dict[str, Any]]:

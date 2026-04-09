@@ -11,6 +11,9 @@ from sqlalchemy import create_engine, pool
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config as app_config
+from database.connection import get_database_url as get_effective_database_url
+from database.connection import get_sqlalchemy_database_url
+from database.connection import is_postgres
 
 # Alembic Config object
 alembic_config = context.config
@@ -24,9 +27,8 @@ target_metadata = None
 
 
 def get_database_url():
-    """Build SQLite database URL from app config."""
-    db_path = os.path.join(app_config.DATA_DIR, "yattee.db")
-    return f"sqlite:///{db_path}"
+    """Get effective database URL from app config."""
+    return get_effective_database_url()
 
 
 def run_migrations_offline() -> None:
@@ -45,10 +47,11 @@ def run_migrations_offline() -> None:
 
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode (executes against database)."""
-    # Ensure data directory exists
-    os.makedirs(app_config.DATA_DIR, exist_ok=True)
+    # Ensure data directory exists for SQLite mode
+    if not is_postgres():
+        os.makedirs(app_config.DATA_DIR, exist_ok=True)
 
-    connectable = create_engine(get_database_url(), poolclass=pool.NullPool)
+    connectable = create_engine(get_sqlalchemy_database_url(), poolclass=pool.NullPool)
 
     with connectable.connect() as connection:
         context.configure(
