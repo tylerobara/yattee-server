@@ -128,7 +128,7 @@ def _parse_comment_renderer(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "authorIsChannelOwner": is_verified,
         "content": content,
         "contentHtml": content_html,
-        "published": 0,  # InnerTube doesn't give unix timestamp
+        "published": None,  # InnerTube doesn't give unix timestamp
         "publishedText": published_text,
         "likeCount": like_count,
         "isHearted": is_hearted,
@@ -232,7 +232,7 @@ def _parse_entity_comment(entity: Dict[str, Any]) -> Dict[str, Any]:
         "authorIsChannelOwner": is_creator,
         "content": content,
         "contentHtml": content,
-        "published": 0,
+        "published": None,
         "publishedText": published_text,
         "likeCount": like_count,
         "isHearted": is_hearted,
@@ -290,6 +290,26 @@ def _parse_comments_response(data: Dict[str, Any]) -> Dict[str, Any]:
                     comment_id = view_model.get("commentId", "")
                     if comment_id and comment_id in entity_map:
                         comment = _parse_entity_comment(entity_map[comment_id])
+
+                        # Extract reply continuation from the thread
+                        replies_renderer = thread.get("replies", {}).get("commentRepliesRenderer", {})
+                        if replies_renderer:
+                            for rc in replies_renderer.get("contents", []):
+                                if "continuationItemRenderer" in rc:
+                                    reply_token = (
+                                        rc["continuationItemRenderer"]
+                                        .get("continuationEndpoint", {})
+                                        .get("continuationCommand", {})
+                                        .get("token")
+                                    )
+                                    if reply_token:
+                                        existing = comment.get("replies") or {}
+                                        reply_count = existing.get("replyCount", 0)
+                                        comment["replies"] = {
+                                            "replyCount": reply_count,
+                                            "continuation": reply_token,
+                                        }
+
                         comments.append(comment)
                     continue
 
@@ -314,6 +334,13 @@ def _parse_comments_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
             elif "commentRenderer" in item:
                 comments.append(_parse_comment_renderer(item["commentRenderer"]))
+
+            # Bare commentViewModel (used in reply responses)
+            elif "commentViewModel" in item:
+                vm = item["commentViewModel"].get("commentViewModel", item["commentViewModel"])
+                comment_id = vm.get("commentId", "")
+                if comment_id and comment_id in entity_map:
+                    comments.append(_parse_entity_comment(entity_map[comment_id]))
 
             elif "continuationItemRenderer" in item:
                 token = (
