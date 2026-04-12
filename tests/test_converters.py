@@ -13,6 +13,7 @@ from converters import (
     construct_author_url,
     convert_captions,
     convert_formats,
+    convert_storyboards,
     convert_thumbnails,
     format_published_text,
     format_subscriber_count,
@@ -1165,3 +1166,128 @@ class TestInvidiousToVideoResponseCaptions:
         assert len(result.captions) == 1
         caption = result.captions[0]
         assert "token=" not in caption.url
+
+
+# =============================================================================
+# Tests for convert_storyboards
+# =============================================================================
+
+
+def _make_storyboard_format(
+    format_id="sb1",
+    width=80,
+    height=45,
+    columns=10,
+    rows=10,
+    fragments=None,
+):
+    """Helper to build a yt-dlp storyboard format entry."""
+    if fragments is None:
+        fragments = [
+            {"url": "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M0.jpg?sqp=-abc", "duration": 26.5},
+            {"url": "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M1.jpg?sqp=-abc", "duration": 26.5},
+        ]
+    return {
+        "format_id": format_id,
+        "ext": "mhtml",
+        "vcodec": "images",
+        "url": fragments[0]["url"] if fragments else "",
+        "width": width,
+        "height": height,
+        "columns": columns,
+        "rows": rows,
+        "fragments": fragments,
+    }
+
+
+class TestConvertStoryboards:
+    def test_basic_conversion(self):
+        """Test all fields are mapped correctly."""
+        formats = [_make_storyboard_format()]
+        result = convert_storyboards(formats)
+        assert len(result) == 1
+        sb = result[0]
+        assert sb.width == 80
+        assert sb.height == 45
+        assert sb.storyboardWidth == 10
+        assert sb.storyboardHeight == 10
+        assert sb.storyboardCount == 2
+        assert sb.count == 10 * 10 * 2
+        assert sb.url == "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M0.jpg?sqp=-abc"
+
+    def test_template_url_derivation(self):
+        """Test M0 in URL is replaced with M$M in templateUrl."""
+        formats = [_make_storyboard_format()]
+        result = convert_storyboards(formats)
+        assert result[0].templateUrl == "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M$M.jpg?sqp=-abc"
+
+    def test_interval_in_milliseconds(self):
+        """Test fragment duration is converted to milliseconds."""
+        formats = [_make_storyboard_format(fragments=[
+            {"url": "https://example.com/M0.jpg", "duration": 5.0},
+        ])]
+        result = convert_storyboards(formats)
+        assert result[0].interval == 5000
+
+    def test_count_calculation(self):
+        """Test count = columns * rows * number of fragments."""
+        formats = [_make_storyboard_format(columns=5, rows=5, fragments=[
+            {"url": "https://example.com/M0.jpg", "duration": 10.0},
+            {"url": "https://example.com/M1.jpg", "duration": 10.0},
+            {"url": "https://example.com/M2.jpg", "duration": 10.0},
+        ])]
+        result = convert_storyboards(formats)
+        assert result[0].count == 5 * 5 * 3
+
+    def test_multiple_resolutions_sorted(self):
+        """Test multiple storyboard formats are converted and sorted by width."""
+        formats = [
+            _make_storyboard_format(format_id="sb2", width=160, height=90),
+            _make_storyboard_format(format_id="sb0", width=48, height=27),
+            _make_storyboard_format(format_id="sb1", width=80, height=45),
+        ]
+        result = convert_storyboards(formats)
+        assert len(result) == 3
+        assert [sb.width for sb in result] == [48, 80, 160]
+
+    def test_skips_missing_fragments(self):
+        """Format with no fragments is skipped."""
+        fmt = _make_storyboard_format()
+        del fmt["fragments"]
+        formats = [fmt]
+        assert convert_storyboards(formats) == []
+
+    def test_skips_empty_fragments(self):
+        """Format with empty fragments list is skipped."""
+        formats = [_make_storyboard_format(fragments=[])]
+        assert convert_storyboards(formats) == []
+
+    def test_skips_missing_dimensions(self):
+        """Format missing columns/rows/width/height is skipped."""
+        for key in ("columns", "rows", "width", "height"):
+            fmt = _make_storyboard_format()
+            del fmt[key]
+            assert convert_storyboards([fmt]) == [], f"Should skip when {key} is missing"
+
+    def test_skips_fragment_without_url(self):
+        """Fragment without url is skipped."""
+        fmt = _make_storyboard_format()
+        fmt["fragments"] = [{"duration": 10.0}]
+        assert convert_storyboards([fmt]) == []
+
+    def test_empty_formats(self):
+        assert convert_storyboards([]) == []
+
+    def test_none_formats(self):
+        assert convert_storyboards(None) == []
+
+    def test_ignores_non_storyboard_formats(self):
+        """Only storyboard formats are extracted, video/audio formats are ignored."""
+        formats = [
+            {"format_id": "18", "ext": "mp4", "url": "https://example.com/video.mp4", "vcodec": "avc1"},
+            _make_storyboard_format(),
+            {"format_id": "140", "ext": "m4a", "url": "https://example.com/audio.m4a", "acodec": "mp4a"},
+        ]
+        result = convert_storyboards(formats)
+        assert len(result) == 1
+        assert result[0].width == 80
