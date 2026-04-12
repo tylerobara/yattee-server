@@ -1,17 +1,14 @@
 """InnerTube search - channel search.
 
-Uses YouTube's InnerTube /search endpoint for searching within channels.
+Uses YouTube's InnerTube resolve_url + browse endpoints to search within channels.
 """
 
 import logging
+import urllib.parse
 from typing import Any, Dict
 
 from innertube._client import innertube_post
-from innertube._converters import (
-    channel_renderer_to_invidious,
-    playlist_renderer_to_invidious,
-    video_renderer_to_invidious,
-)
+from innertube._converters import video_renderer_to_invidious
 
 logger = logging.getLogger("innertube")
 
@@ -21,46 +18,101 @@ async def search_channel(
 ) -> Dict[str, Any]:
     """Search for videos within a channel.
 
+    Uses YouTube's resolve_url endpoint to get the correct browse params
+    for a channel search URL, then fetches results via browse.
+
     Args:
         channel_id: YouTube channel ID (UC...) or handle (@name)
         query: Search query string
-        page: Page number (1-based) — note: InnerTube uses continuation tokens,
-              so pagination beyond page 1 may not be supported without continuation
+        page: Page number (1-based)
 
     Returns:
         Dict with "videos" list and optional "continuation" token
     """
-    # For channel search, we use the /search endpoint with a channel filter
-    # The channel filter is specified via the browseId in the endpoint context
-    body = {
-        "query": query,
-        "params": _encode_channel_search_param(channel_id),
-    }
+    encoded_query = urllib.parse.quote(query)
 
-    data = await innertube_post("search", body)
+    # Step 1: Resolve the channel search URL to get browse params
+    if channel_id.startswith("@"):
+        search_url = f"https://www.youtube.com/{channel_id}/search?query={encoded_query}"
+    else:
+        search_url = f"https://www.youtube.com/channel/{channel_id}/search?query={encoded_query}"
 
+    resolve_data = await innertube_post("navigation/resolve_url", {"url": search_url})
+
+    browse_endpoint = resolve_data.get("endpoint", {}).get("browseEndpoint", {})
+    browse_id = browse_endpoint.get("browseId", channel_id)
+    params = browse_endpoint.get("params")
+
+    if not params:
+        logger.warning(f"[InnerTube] Channel search resolve failed for {channel_id}")
+        return {"videos": [], "continuation": None}
+
+    # Step 2: Browse with the resolved params to load the channel page with search tab
+    browse_data = await innertube_post("browse", {"browseId": browse_id, "params": params})
+
+    # Step 3: Find the search tab's continuation token and fetch results
+    tabs = browse_data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
+
+    for tab in tabs:
+        renderer = tab.get("expandableTabRenderer", {}) or tab.get("tabRenderer", {})
+        if not renderer.get("selected"):
+            continue
+
+        # Check if results are inline in the tab content
+        content = renderer.get("content", {})
+        sl = content.get("sectionListRenderer", {})
+        if sl:
+            videos, continuation = _parse_search_sections(sl.get("contents", []))
+            if videos:
+                logger.info(f"[InnerTube] Channel search {channel_id} q={query}: {len(videos)} results")
+                return {"videos": videos, "continuation": continuation}
+
+        # If tab content is empty, check for a continuation in the tab's endpoint
+        tab_endpoint = renderer.get("endpoint", {}).get("browseEndpoint", {})
+        tab_params = tab_endpoint.get("params")
+        if tab_params and tab_params != params:
+            # Fetch the search tab content with its own params
+            tab_data = await innertube_post("browse", {"browseId": browse_id, "params": tab_params, "query": query})
+
+            # Check onResponseReceivedActions (continuation-loaded results)
+            for action in tab_data.get("onResponseReceivedActions", []):
+                append = action.get("appendContinuationItemsAction", {})
+                items = append.get("continuationItems", [])
+                if items:
+                    videos, continuation = _parse_continuation_items(items)
+                    if videos:
+                        logger.info(f"[InnerTube] Channel search {channel_id} q={query}: {len(videos)} results")
+                        return {"videos": videos, "continuation": continuation}
+
+            # Also check tab content in the response
+            tabs2 = tab_data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
+            for tab2 in tabs2:
+                r2 = tab2.get("expandableTabRenderer", {}) or tab2.get("tabRenderer", {})
+                if r2.get("selected"):
+                    sl2 = r2.get("content", {}).get("sectionListRenderer", {})
+                    if sl2:
+                        videos, continuation = _parse_search_sections(sl2.get("contents", []))
+                        if videos:
+                            logger.info(
+                                f"[InnerTube] Channel search {channel_id} q={query}: {len(videos)} results"
+                            )
+                            return {"videos": videos, "continuation": continuation}
+
+    logger.debug(f"[InnerTube] Channel search {channel_id} q={query}: no results found in response")
+    return {"videos": [], "continuation": None}
+
+
+def _parse_search_sections(sections: list) -> tuple[list, str | None]:
+    """Parse video results from sectionListRenderer contents."""
     videos = []
     continuation = None
 
-    # Parse search results
-    section_list = (
-        data.get("contents", {})
-        .get("twoColumnSearchResultsRenderer", {})
-        .get("primaryContents", {})
-        .get("sectionListRenderer", {})
-    )
-
-    for section in section_list.get("contents", []):
-        item_section = section.get("itemSectionRenderer", {})
-        for item in item_section.get("contents", []):
+    for section in sections:
+        isr = section.get("itemSectionRenderer", {})
+        for item in isr.get("contents", []):
             if "videoRenderer" in item:
                 videos.append(video_renderer_to_invidious(item["videoRenderer"]))
-            elif "playlistRenderer" in item:
-                videos.append(playlist_renderer_to_invidious(item["playlistRenderer"]))
-            elif "channelRenderer" in item:
-                videos.append(channel_renderer_to_invidious(item["channelRenderer"]))
 
-        # Check for continuation
         if "continuationItemRenderer" in section:
             token = (
                 section["continuationItemRenderer"]
@@ -71,29 +123,30 @@ async def search_channel(
             if token:
                 continuation = token
 
-    logger.info(f"[InnerTube] Channel search {channel_id} q={query}: {len(videos)} results")
-    return {"videos": videos, "continuation": continuation}
+    return videos, continuation
 
 
-def _encode_channel_search_param(channel_id: str) -> str:
-    """Encode channel search filter parameter.
+def _parse_continuation_items(items: list) -> tuple[list, str | None]:
+    """Parse video results from continuation items."""
+    videos = []
+    continuation = None
 
-    This creates a protobuf-encoded base64 parameter that filters search
-    results to a specific channel. The encoding follows YouTube's protobuf
-    search parameter format.
-    """
-    import base64
+    for item in items:
+        if "itemSectionRenderer" in item:
+            isr = item["itemSectionRenderer"]
+            for content in isr.get("contents", []):
+                if "videoRenderer" in content:
+                    videos.append(video_renderer_to_invidious(content["videoRenderer"]))
+        elif "videoRenderer" in item:
+            videos.append(video_renderer_to_invidious(item["videoRenderer"]))
+        elif "continuationItemRenderer" in item:
+            token = (
+                item["continuationItemRenderer"]
+                .get("continuationEndpoint", {})
+                .get("continuationCommand", {})
+                .get("token")
+            )
+            if token:
+                continuation = token
 
-    # Protobuf encoding for channel filter:
-    # Field 2 (search filter), wire type 2 (length-delimited)
-    # Sub-field 1 (channel ID), wire type 2
-    channel_bytes = channel_id.encode("utf-8")
-    # Protobuf: field 2, wire type 2 -> tag = (2 << 3) | 2 = 18
-    # Inner: field 2, wire type 2 -> tag = (2 << 3) | 2 = 18
-    # Inner inner: field 1, wire type 2 -> tag = (1 << 3) | 2 = 10
-
-    inner = bytes([10, len(channel_bytes)]) + channel_bytes
-    middle = bytes([18, len(inner)]) + inner
-    outer = bytes([18, len(middle)]) + middle
-
-    return base64.b64encode(outer).decode("utf-8")
+    return videos, continuation
