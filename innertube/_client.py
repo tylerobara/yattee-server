@@ -233,9 +233,11 @@ async def innertube_post(endpoint: str, body: Dict[str, Any], use_cookies: bool 
             cookies = await _load_youtube_cookies()
             if cookies:
                 headers["Cookie"] = _format_cookie_header(cookies)
-                logger.debug(f"[InnerTube] Using {len(cookies)} cookies for {endpoint}")
+                logger.info(f"[InnerTube] Using {len(cookies)} cookies for {endpoint}")
+            else:
+                logger.info(f"[InnerTube] No YouTube cookies found in credentials")
         except Exception as e:
-            logger.debug(f"[InnerTube] Cookie loading failed (continuing without): {e}")
+            logger.warning(f"[InnerTube] Cookie loading failed (continuing without): {e}")
 
     max_retries = 2
     base_delay = 1.0
