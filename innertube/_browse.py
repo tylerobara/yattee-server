@@ -326,11 +326,13 @@ async def get_channel_info(channel_id: str) -> Optional[Dict[str, Any]]:
             if "subscriber" in text.lower():
                 sub_count = _parse_count_text(text)
 
-    # Check for verification badge
-    for badge in data.get("header", {}).get("pageHeaderRenderer", {}).get("badges", []):
-        if badge.get("metadataBadgeRenderer", {}).get("style") == "BADGE_STYLE_TYPE_VERIFIED":
-            verified = True
-            break
+    # Check for verification badge — scan the response JSON for ownerBadges
+    # YouTube puts channel verification badges on video renderers, not in the header
+    import json as _json
+
+    response_text = _json.dumps(data)
+    if "BADGE_STYLE_TYPE_VERIFIED" in response_text:
+        verified = True
 
     logger.info(f"[InnerTube] Channel info {channel_id}: {author}, {len(banners)} banners, {len(thumbnails)} avatars")
 
