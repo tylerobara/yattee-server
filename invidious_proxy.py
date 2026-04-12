@@ -604,10 +604,10 @@ async def proxy_storyboards(video_id: str, request: Request):
 
 @router.get("/thumbnails/{video_id}/{filename}")
 async def proxy_thumbnail(video_id: str, filename: str, request: Request, token: str = None):
-    """Proxy thumbnail requests to Invidious.
+    """Proxy thumbnail requests.
 
-    This endpoint handles /api/v1/thumbnails/{video_id}/{filename} and proxies to
-    {invidious}/vi/{video_id}/{filename}.
+    Proxies directly to YouTube's CDN (i.ytimg.com), falling back to Invidious
+    if the direct proxy fails and Invidious is configured.
 
     Thumbnail filenames are typically: maxres.jpg, maxresdefault.jpg, sddefault.jpg,
     hqdefault.jpg, mqdefault.jpg, default.jpg, 1.jpg, 2.jpg, 3.jpg
@@ -618,15 +618,24 @@ async def proxy_thumbnail(video_id: str, filename: str, request: Request, token:
     # Validate token if basic auth is enabled
     _validate_resource_token(token, video_id)
 
+    logger.info(f"[Thumbnails] Proxy request: {video_id}/{filename}")
+
+    # Try direct YouTube CDN first (no Invidious needed)
+    try:
+        import innertube
+
+        content, status_code, headers = await innertube.proxy_thumbnail(video_id, filename)
+        if status_code < 400:
+            return Response(content=content, status_code=status_code, headers=headers)
+    except Exception as e:
+        logger.debug(f"[Thumbnails] Direct proxy failed: {video_id}/{filename} - {e}")
+
+    # Fall back to Invidious
     if not is_enabled():
-        raise HTTPException(status_code=503, detail="Invidious proxy not configured")
+        raise HTTPException(status_code=503, detail="Thumbnail proxy not available")
 
     client = await get_client()
-
-    # Build URL: {invidious}/vi/{video_id}/{filename}
     url = f"{get_base_url()}/vi/{video_id}/{filename}"
-
-    logger.info(f"[Thumbnails] Proxy request: {video_id}/{filename}")
 
     try:
         response = await client.get(url)

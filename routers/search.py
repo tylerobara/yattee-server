@@ -5,6 +5,7 @@ from typing import List, Optional, Union
 
 from fastapi import APIRouter, HTTPException, Query
 
+import innertube
 import invidious_proxy
 from converters import (
     invidious_to_channel_list_item,
@@ -92,14 +93,23 @@ async def search(
 
 @router.get("/search/suggestions", response_model=List[str])
 async def search_suggestions(q: str = Query(..., description="Search query")):
-    """Get search suggestions (proxied from Invidious if configured)."""
-    if not invidious_proxy.is_enabled():
-        return []
-
+    """Get search suggestions. Tries InnerTube first, falls back to Invidious."""
+    # Try InnerTube first (no external dependency needed)
     try:
-        return await invidious_proxy.get_search_suggestions(q)
-    except invidious_proxy.InvidiousProxyError:
-        return []
+        suggestions = await innertube.get_search_suggestions(q)
+        if suggestions:
+            return suggestions
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Search] InnerTube suggestions error: {e}")
+
+    # Fall back to Invidious
+    if invidious_proxy.is_enabled():
+        try:
+            return await invidious_proxy.get_search_suggestions(q)
+        except invidious_proxy.InvidiousProxyError:
+            pass
+
+    return []
 
 
 @router.get("/trending", response_model=List[VideoListItem])

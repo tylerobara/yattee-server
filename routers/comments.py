@@ -1,10 +1,11 @@
-"""Comments endpoints - proxied through Invidious."""
+"""Comments endpoints - InnerTube primary, Invidious fallback."""
 
 import logging
 from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
+import innertube
 import invidious_proxy
 from converters import resolve_invidious_url
 
@@ -47,27 +48,34 @@ async def get_comments(
     """
     Get comments for a video.
 
-    Comments are proxied through Invidious since yt-dlp doesn't extract them well.
-    Requires INVIDIOUS_INSTANCE to be configured.
+    Tries InnerTube first (direct YouTube API), falls back to Invidious if configured.
     """
-    if not invidious_proxy.is_enabled():
-        raise HTTPException(
-            status_code=503, detail="Comments require Invidious proxy. Set INVIDIOUS_INSTANCE environment variable."
-        )
-
+    # Try InnerTube first
     try:
-        data = await invidious_proxy.get_comments(video_id, continuation)
-        if data is None:
-            return {"comments": [], "continuation": None}
+        data = await innertube.get_comments(video_id, continuation)
+        if data and data.get("comments"):
+            logger.info(f"[Comments] InnerTube success for {video_id}: {len(data['comments'])} comments")
+            return data
+        # If InnerTube returned empty, fall through to Invidious
+        logger.debug(f"[Comments] InnerTube returned no comments for {video_id}, trying Invidious")
+    except innertube.InnerTubeError as e:
+        logger.warning(f"[Comments] InnerTube error for {video_id}: {e}")
 
-        # Resolve relative URLs in comment author thumbnails
-        if "comments" in data:
-            invidious_base = invidious_proxy.get_base_url()
-            data["comments"] = _resolve_comment_thumbnails(data["comments"], invidious_base)
+    # Fall back to Invidious
+    if invidious_proxy.is_enabled():
+        try:
+            data = await invidious_proxy.get_comments(video_id, continuation)
+            if data is None:
+                return {"comments": [], "continuation": None}
 
-        return data
-    except invidious_proxy.InvidiousProxyError as e:
-        raise HTTPException(status_code=502, detail=f"Invidious proxy error: {e}")
-    except (KeyError, TypeError) as e:
-        logger.error(f"[Comments] Unexpected error for {video_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+            # Resolve relative URLs in comment author thumbnails
+            if "comments" in data:
+                invidious_base = invidious_proxy.get_base_url()
+                data["comments"] = _resolve_comment_thumbnails(data["comments"], invidious_base)
+
+            return data
+        except invidious_proxy.InvidiousProxyError as e:
+            raise HTTPException(status_code=502, detail=f"Comments proxy error: {e}")
+
+    # Neither source available — return empty rather than 503
+    return {"comments": [], "continuation": None}

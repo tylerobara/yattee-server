@@ -353,35 +353,50 @@ class TestSearchSuggestions:
         self.db_path = test_db
         self.client = test_client
 
-    def test_suggestions_success(self):
-        """Test successful search suggestions."""
+    def test_suggestions_success_innertube(self):
+        """Test successful search suggestions via InnerTube."""
         suggestions = ["test video", "test music", "testing 123", "test tutorial"]
 
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_search_suggestions", new_callable=AsyncMock) as mock_sugg:
-                mock_sugg.return_value = suggestions
-                response = self.client.get("/api/v1/search/suggestions?q=test")
+        with patch("routers.search.innertube.get_search_suggestions", new_callable=AsyncMock) as mock_it:
+            mock_it.return_value = suggestions
+            response = self.client.get("/api/v1/search/suggestions?q=test")
 
         assert response.status_code == 200
         data = response.json()
         assert data == suggestions
 
-    def test_suggestions_invidious_disabled(self):
-        """Test empty suggestions when Invidious is disabled."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=False):
-            response = self.client.get("/api/v1/search/suggestions?q=test")
+    def test_suggestions_innertube_fails_invidious_fallback(self):
+        """Test suggestions fall back to Invidious when InnerTube fails."""
+        from innertube import InnerTubeError
+
+        suggestions = ["test video", "test music"]
+
+        with patch("routers.search.innertube.get_search_suggestions", new_callable=AsyncMock) as mock_it:
+            mock_it.side_effect = InnerTubeError("Failed")
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_search_suggestions", new_callable=AsyncMock
+                ) as mock_sugg:
+                    mock_sugg.return_value = suggestions
+                    response = self.client.get("/api/v1/search/suggestions?q=test")
 
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        assert data == suggestions
 
-    def test_suggestions_invidious_error_returns_empty(self):
-        """Test empty suggestions on Invidious error."""
+    def test_suggestions_both_fail_returns_empty(self):
+        """Test empty suggestions when both InnerTube and Invidious fail."""
+        from innertube import InnerTubeError
         from invidious_proxy import InvidiousProxyError
 
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_search_suggestions", new_callable=AsyncMock) as mock_sugg:
-                mock_sugg.side_effect = InvidiousProxyError("Failed")
-                response = self.client.get("/api/v1/search/suggestions?q=test")
+        with patch("routers.search.innertube.get_search_suggestions", new_callable=AsyncMock) as mock_it:
+            mock_it.side_effect = InnerTubeError("Failed")
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_search_suggestions", new_callable=AsyncMock
+                ) as mock_sugg:
+                    mock_sugg.side_effect = InvidiousProxyError("Failed")
+                    response = self.client.get("/api/v1/search/suggestions?q=test")
 
         assert response.status_code == 200
         assert response.json() == []
