@@ -183,6 +183,27 @@ def _format_cookie_header(cookies: Dict[str, str]) -> str:
     return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
+def _generate_sapisidhash(cookies: Dict[str, str]) -> Optional[str]:
+    """Generate SAPISIDHASH authorization header from cookies.
+
+    YouTube requires this header for authenticated InnerTube requests.
+    It's derived from the SAPISID cookie, current timestamp, and origin.
+    This is the same mechanism yt-dlp uses.
+    """
+    import hashlib
+    import time
+
+    sapisid = cookies.get("SAPISID") or cookies.get("__Secure-3PAPISID")
+    if not sapisid:
+        return None
+
+    origin = "https://www.youtube.com"
+    ts = int(time.time())
+    hash_input = f"{ts} {sapisid} {origin}"
+    hash_value = hashlib.sha1(hash_input.encode()).hexdigest()
+    return f"SAPISIDHASH {ts}_{hash_value}"
+
+
 async def get_client() -> httpx.AsyncClient:
     """Get or create the shared HTTP client."""
     global _client
@@ -227,15 +248,18 @@ async def innertube_post(endpoint: str, body: Dict[str, Any], use_cookies: bool 
 
     headers = {"Content-Type": "application/json"}
 
-    # Load and inject cookies
+    # Load and inject cookies + SAPISIDHASH auth
     if use_cookies:
         try:
             cookies = await _load_youtube_cookies()
             if cookies:
                 headers["Cookie"] = _format_cookie_header(cookies)
-                logger.info(f"[InnerTube] Using {len(cookies)} cookies for {endpoint}")
+                sapisidhash = _generate_sapisidhash(cookies)
+                if sapisidhash:
+                    headers["Authorization"] = sapisidhash
+                logger.info(f"[InnerTube] Using {len(cookies)} cookies for {endpoint} (auth={bool(sapisidhash)})")
             else:
-                logger.info(f"[InnerTube] No YouTube cookies found in credentials")
+                logger.info("[InnerTube] No YouTube cookies found in credentials")
         except Exception as e:
             logger.warning(f"[InnerTube] Cookie loading failed (continuing without): {e}")
 
