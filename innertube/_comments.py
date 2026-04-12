@@ -166,7 +166,7 @@ def _find_comment_section(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for panel in data.get("engagementPanels", []):
         ep_renderer = panel.get("engagementPanelSectionListRenderer", {})
         panel_id = ep_renderer.get("panelIdentifier", "")
-        if panel_id == "comment-item-section":
+        if "comment" in panel_id:
             # The continuation is in the content
             content = ep_renderer.get("content", {})
             section = content.get("sectionListRenderer", {})
@@ -192,15 +192,88 @@ def _find_comment_section(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_entity_comment(entity: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a commentEntityPayload from frameworkUpdates mutations."""
+    props = entity.get("properties", {})
+    author = entity.get("author", {})
+    toolbar = entity.get("toolbar", {})
+
+    comment_id = props.get("commentId", "")
+    content = props.get("content", {}).get("content", "")
+    published_text = props.get("publishedTime", "")
+
+    author_name = author.get("displayName", "")
+    channel_id = author.get("channelId", "")
+    is_creator = author.get("isCreator", False)
+    avatar_url = author.get("avatarThumbnailUrl", "")
+
+    # Like count from toolbar
+    like_count_text = toolbar.get("likeCountNotliked", "") or toolbar.get("likeCountLiked", "")
+    like_count = _parse_count(like_count_text) if like_count_text else 0
+
+    # Reply count
+    reply_count_text = toolbar.get("replyCount", "")
+    reply_count = _parse_count(reply_count_text) if reply_count_text else 0
+
+    # Heart
+    is_hearted = bool(toolbar.get("heartState") == "HEART_STATE_HEARTED")
+
+    # Build author thumbnails
+    author_thumbnails = []
+    if avatar_url:
+        author_thumbnails = [{"url": avatar_url, "width": 48, "height": 48}]
+
+    result = {
+        "commentId": comment_id,
+        "author": author_name,
+        "authorId": channel_id,
+        "authorUrl": f"/channel/{channel_id}" if channel_id else "",
+        "authorThumbnails": author_thumbnails,
+        "authorIsChannelOwner": is_creator,
+        "content": content,
+        "contentHtml": content,
+        "published": 0,
+        "publishedText": published_text,
+        "likeCount": like_count,
+        "isHearted": is_hearted,
+        "isPinned": False,
+        "replies": None,
+    }
+
+    if reply_count > 0:
+        result["replies"] = {"replyCount": reply_count, "continuation": None}
+
+    return result
+
+
+def _build_entity_map(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """Build a map of commentId -> commentEntityPayload from frameworkUpdates."""
+    entity_map = {}
+    mutations = data.get("frameworkUpdates", {}).get("entityBatchUpdate", {}).get("mutations", [])
+    for mutation in mutations:
+        payload = mutation.get("payload", {})
+        if "commentEntityPayload" in payload:
+            entity = payload["commentEntityPayload"]
+            comment_id = entity.get("properties", {}).get("commentId", "")
+            if comment_id:
+                entity_map[comment_id] = entity
+    return entity_map
+
+
 def _parse_comments_response(data: Dict[str, Any]) -> Dict[str, Any]:
     """Parse an InnerTube continuation response containing comments.
 
-    This handles the response from fetching a comment continuation token.
+    YouTube uses two formats:
+    - Legacy: commentRenderer inside commentThreadRenderer (older responses)
+    - New: commentViewModel with data in frameworkUpdates.entityBatchUpdate.mutations
     """
     comments = []
     continuation = None
 
-    # Try onResponseReceivedEndpoints (the standard path for comment continuations)
+    # Build entity map for the new format
+    entity_map = _build_entity_map(data)
+
+    # Extract comment IDs and continuation from onResponseReceivedEndpoints
     for endpoint in data.get("onResponseReceivedEndpoints", []):
         actions = endpoint.get("reloadContinuationItemsCommand", {}) or endpoint.get(
             "appendContinuationItemsAction", {}
@@ -208,18 +281,26 @@ def _parse_comments_response(data: Dict[str, Any]) -> Dict[str, Any]:
         items = actions.get("continuationItems", [])
 
         for item in items:
-            # Comment thread
             if "commentThreadRenderer" in item:
                 thread = item["commentThreadRenderer"]
+
+                # New format: commentViewModel
+                view_model = thread.get("commentViewModel", {}).get("commentViewModel", {})
+                if view_model:
+                    comment_id = view_model.get("commentId", "")
+                    if comment_id and comment_id in entity_map:
+                        comment = _parse_entity_comment(entity_map[comment_id])
+                        comments.append(comment)
+                    continue
+
+                # Legacy format: commentRenderer
                 comment_renderer = thread.get("comment", {}).get("commentRenderer", {})
                 if comment_renderer:
                     comment = _parse_comment_renderer(comment_renderer)
 
-                    # Check for reply continuation
                     replies_renderer = thread.get("replies", {}).get("commentRepliesRenderer", {})
                     if replies_renderer:
-                        reply_continuations = replies_renderer.get("contents", [])
-                        for rc in reply_continuations:
+                        for rc in replies_renderer.get("contents", []):
                             if "continuationItemRenderer" in rc:
                                 reply_token = (
                                     rc["continuationItemRenderer"]
@@ -229,14 +310,11 @@ def _parse_comments_response(data: Dict[str, Any]) -> Dict[str, Any]:
                                 )
                                 if reply_token:
                                     comment["replies"] = {"replyCount": 0, "continuation": reply_token}
-
                     comments.append(comment)
 
-            # Single comment (in reply threads)
             elif "commentRenderer" in item:
                 comments.append(_parse_comment_renderer(item["commentRenderer"]))
 
-            # Continuation for next page
             elif "continuationItemRenderer" in item:
                 token = (
                     item["continuationItemRenderer"]
