@@ -6,7 +6,7 @@ Uses YouTube's InnerTube /browse endpoint to fetch categorized content.
 import logging
 from typing import Any, Dict, List, Optional
 
-from innertube._client import _build_context, innertube_post
+from innertube._client import _build_context, _get_client_version, innertube_post
 from innertube._converters import (
     grid_playlist_to_invidious,
     grid_video_to_invidious,
@@ -136,9 +136,10 @@ async def get_trending(region: str = "US") -> List[Dict[str, Any]]:
     Returns:
         List of video dicts in Invidious format
     """
+    version = await _get_client_version()
     body = {
         "browseId": "FEtrending",
-        "context": _build_context(region=region),
+        "context": _build_context(region=region, client_version=version),
     }
     data = await innertube_post("browse", body)
     items, _ = _extract_items_from_tab(data)

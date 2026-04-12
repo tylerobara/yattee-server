@@ -23,10 +23,12 @@ INNERTUBE_API_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8"
 
 # WEB client context
 INNERTUBE_CLIENT_NAME = "WEB"
-INNERTUBE_CLIENT_VERSION = "2.20260401.00.00"
+INNERTUBE_CLIENT_VERSION = "2.20260409.02.00"
 
 # Shared HTTP client
 _client: Optional[httpx.AsyncClient] = None
+_client_version: Optional[str] = None
+_client_version_fetched: float = 0
 
 
 class InnerTubeError(Exception):
@@ -38,12 +40,38 @@ class InnerTubeError(Exception):
         self.is_retryable = is_retryable
 
 
-def _build_context(language: str = "en", region: str = "US") -> Dict[str, Any]:
+async def _get_client_version() -> str:
+    """Get the current YouTube client version, refreshing from YouTube periodically."""
+    global _client_version, _client_version_fetched
+    import re
+    import time
+
+    # Cache for 24 hours
+    now = time.time()
+    if _client_version and (now - _client_version_fetched) < 86400:
+        return _client_version
+
+    try:
+        client = await get_client()
+        resp = await client.get("https://www.youtube.com/")
+        match = re.search(r'"INNERTUBE_CLIENT_VERSION":"([^"]+)"', resp.text)
+        if match:
+            _client_version = match.group(1)
+            _client_version_fetched = now
+            logger.info(f"[InnerTube] Refreshed client version: {_client_version}")
+            return _client_version
+    except Exception as e:
+        logger.debug(f"[InnerTube] Failed to fetch client version: {e}")
+
+    return _client_version or INNERTUBE_CLIENT_VERSION
+
+
+def _build_context(language: str = "en", region: str = "US", client_version: Optional[str] = None) -> Dict[str, Any]:
     """Build the InnerTube client context."""
     return {
         "client": {
             "clientName": INNERTUBE_CLIENT_NAME,
-            "clientVersion": INNERTUBE_CLIENT_VERSION,
+            "clientVersion": client_version or INNERTUBE_CLIENT_VERSION,
             "hl": language,
             "gl": region,
         }
@@ -192,9 +220,10 @@ async def innertube_post(endpoint: str, body: Dict[str, Any], use_cookies: bool 
     client = await get_client()
     url = f"{INNERTUBE_API_URL}/{endpoint}?key={INNERTUBE_API_KEY}"
 
-    # Add client context to body
+    # Add client context to body with dynamic version
     if "context" not in body:
-        body["context"] = _build_context()
+        version = await _get_client_version()
+        body["context"] = _build_context(client_version=version)
 
     headers = {"Content-Type": "application/json"}
 
