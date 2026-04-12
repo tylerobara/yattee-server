@@ -416,56 +416,91 @@ class TestTrending:
         self.db_path = test_db
         self.client = test_client
 
+    def _mock_innertube_trending_fail(self):
+        """Helper: mock InnerTube trending to fail so Invidious fallback is used."""
+        from innertube import InnerTubeError
+
+        return patch("routers.search.innertube.get_trending", new_callable=AsyncMock, side_effect=InnerTubeError("x"))
+
     def test_trending_success(self, sample_trending_results):
-        """Test successful trending videos."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_trending", new_callable=AsyncMock) as mock_trending:
-                mock_trending.return_value = sample_trending_results
-                with patch("routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                    response = self.client.get("/api/v1/trending")
+        """Test successful trending videos via Invidious fallback."""
+        with self._mock_innertube_trending_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_trending", new_callable=AsyncMock
+                ) as mock_trending:
+                    mock_trending.return_value = sample_trending_results
+                    with patch(
+                        "routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                    ):
+                        response = self.client.get("/api/v1/trending")
 
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
         assert data[0]["videoId"] == "trending1xx"
 
+    def test_trending_innertube_success(self, sample_trending_results):
+        """Test successful trending videos via InnerTube."""
+        with patch("routers.search.innertube.get_trending", new_callable=AsyncMock) as mock_it:
+            mock_it.return_value = sample_trending_results
+            response = self.client.get("/api/v1/trending")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 2
+
     def test_trending_with_region(self, sample_trending_results):
         """Test trending with region parameter."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_trending", new_callable=AsyncMock) as mock_trending:
-                mock_trending.return_value = sample_trending_results
-                with patch("routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                    response = self.client.get("/api/v1/trending?region=GB")
+        with self._mock_innertube_trending_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_trending", new_callable=AsyncMock
+                ) as mock_trending:
+                    mock_trending.return_value = sample_trending_results
+                    with patch(
+                        "routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                    ):
+                        response = self.client.get("/api/v1/trending?region=GB")
 
         assert response.status_code == 200
         mock_trending.assert_called_once_with("GB")
 
     def test_trending_default_region_us(self, sample_trending_results):
         """Test trending defaults to US region."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_trending", new_callable=AsyncMock) as mock_trending:
-                mock_trending.return_value = sample_trending_results
-                with patch("routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                    self.client.get("/api/v1/trending")
+        with self._mock_innertube_trending_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_trending", new_callable=AsyncMock
+                ) as mock_trending:
+                    mock_trending.return_value = sample_trending_results
+                    with patch(
+                        "routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                    ):
+                        self.client.get("/api/v1/trending")
 
         mock_trending.assert_called_once_with("US")
 
-    def test_trending_invidious_disabled(self):
-        """Test empty trending when Invidious is disabled."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=False):
-            response = self.client.get("/api/v1/trending")
+    def test_trending_both_disabled_returns_empty(self):
+        """Test empty trending when both InnerTube and Invidious fail."""
+        with self._mock_innertube_trending_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=False):
+                response = self.client.get("/api/v1/trending")
 
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_trending_invidious_error_returns_empty(self):
-        """Test empty trending on Invidious error."""
+    def test_trending_both_error_returns_empty(self):
+        """Test empty trending when both sources error."""
         from invidious_proxy import InvidiousProxyError
 
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_trending", new_callable=AsyncMock) as mock_trending:
-                mock_trending.side_effect = InvidiousProxyError("Failed")
-                response = self.client.get("/api/v1/trending")
+        with self._mock_innertube_trending_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_trending", new_callable=AsyncMock
+                ) as mock_trending:
+                    mock_trending.side_effect = InvidiousProxyError("Failed")
+                    response = self.client.get("/api/v1/trending")
 
         assert response.status_code == 200
         assert response.json() == []
@@ -485,34 +520,49 @@ class TestPopular:
         self.db_path = test_db
         self.client = test_client
 
+    def _mock_innertube_popular_fail(self):
+        """Helper: mock InnerTube popular to fail so Invidious fallback is used."""
+        from innertube import InnerTubeError
+
+        return patch("routers.search.innertube.get_popular", new_callable=AsyncMock, side_effect=InnerTubeError("x"))
+
     def test_popular_success(self, sample_trending_results):
-        """Test successful popular videos."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_popular", new_callable=AsyncMock) as mock_popular:
-                mock_popular.return_value = sample_trending_results
-                with patch("routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                    response = self.client.get("/api/v1/popular")
+        """Test successful popular videos via Invidious fallback."""
+        with self._mock_innertube_popular_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_popular", new_callable=AsyncMock
+                ) as mock_popular:
+                    mock_popular.return_value = sample_trending_results
+                    with patch(
+                        "routers.search.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                    ):
+                        response = self.client.get("/api/v1/popular")
 
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 2
 
-    def test_popular_invidious_disabled(self):
-        """Test empty popular when Invidious is disabled."""
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=False):
-            response = self.client.get("/api/v1/popular")
+    def test_popular_both_disabled_returns_empty(self):
+        """Test empty popular when both InnerTube and Invidious are unavailable."""
+        with self._mock_innertube_popular_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=False):
+                response = self.client.get("/api/v1/popular")
 
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_popular_invidious_error_returns_empty(self):
-        """Test empty popular on Invidious error."""
+    def test_popular_both_error_returns_empty(self):
+        """Test empty popular when both sources error."""
         from invidious_proxy import InvidiousProxyError
 
-        with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
-            with patch("routers.search.invidious_proxy.get_popular", new_callable=AsyncMock) as mock_popular:
-                mock_popular.side_effect = InvidiousProxyError("Failed")
-                response = self.client.get("/api/v1/popular")
+        with self._mock_innertube_popular_fail():
+            with patch("routers.search.invidious_proxy.is_enabled", return_value=True):
+                with patch(
+                    "routers.search.invidious_proxy.get_popular", new_callable=AsyncMock
+                ) as mock_popular:
+                    mock_popular.side_effect = InvidiousProxyError("Failed")
+                    response = self.client.get("/api/v1/popular")
 
         assert response.status_code == 200
         assert response.json() == []

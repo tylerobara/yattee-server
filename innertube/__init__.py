@@ -3,17 +3,33 @@
 Provides access to YouTube data without requiring an Invidious instance.
 """
 
+from innertube._browse import (
+    get_channel_playlists,
+    get_channel_shorts,
+    get_channel_streams,
+    get_channel_videos,
+    get_popular,
+    get_trending,
+)
 from innertube._client import InnerTubeError, get_client, innertube_get, innertube_post
 from innertube._comments import get_comments
+from innertube._search import search_channel
 from innertube._suggestions import get_search_suggestions
 from innertube._thumbnails import proxy_thumbnail
 
 __all__ = [
     "InnerTubeError",
+    "get_channel_playlists",
+    "get_channel_shorts",
+    "get_channel_streams",
+    "get_channel_videos",
     "get_client",
     "get_comments",
+    "get_popular",
     "get_search_suggestions",
+    "get_trending",
     "innertube_get",
     "innertube_post",
     "proxy_thumbnail",
+    "search_channel",
 ]

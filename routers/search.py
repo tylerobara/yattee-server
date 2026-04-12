@@ -114,27 +114,45 @@ async def search_suggestions(q: str = Query(..., description="Search query")):
 
 @router.get("/trending", response_model=List[VideoListItem])
 async def trending(region: str = Query("US", description="Region code")):
-    """Get trending videos (proxied from Invidious if configured)."""
-    if not invidious_proxy.is_enabled():
-        return []
-
+    """Get trending videos. Tries InnerTube first, falls back to Invidious."""
+    # Try InnerTube first
     try:
-        results = await invidious_proxy.get_trending(region)
-        invidious_base = _get_invidious_base()
-        return [invidious_to_video_list_item(item, invidious_base) for item in results]
-    except invidious_proxy.InvidiousProxyError:
-        return []
+        results = await innertube.get_trending(region)
+        if results:
+            return [invidious_to_video_list_item(item) for item in results]
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Search] InnerTube trending error: {e}")
+
+    # Fall back to Invidious
+    if invidious_proxy.is_enabled():
+        try:
+            results = await invidious_proxy.get_trending(region)
+            invidious_base = _get_invidious_base()
+            return [invidious_to_video_list_item(item, invidious_base) for item in results]
+        except invidious_proxy.InvidiousProxyError:
+            pass
+
+    return []
 
 
 @router.get("/popular", response_model=List[VideoListItem])
 async def popular():
-    """Get popular videos (proxied from Invidious if configured)."""
-    if not invidious_proxy.is_enabled():
-        return []
-
+    """Get popular videos. Tries InnerTube first, falls back to Invidious."""
+    # Try InnerTube first
     try:
-        results = await invidious_proxy.get_popular()
-        invidious_base = _get_invidious_base()
-        return [invidious_to_video_list_item(item, invidious_base) for item in results]
-    except invidious_proxy.InvidiousProxyError:
-        return []
+        results = await innertube.get_popular()
+        if results:
+            return [invidious_to_video_list_item(item) for item in results]
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Search] InnerTube popular error: {e}")
+
+    # Fall back to Invidious
+    if invidious_proxy.is_enabled():
+        try:
+            results = await invidious_proxy.get_popular()
+            invidious_base = _get_invidious_base()
+            return [invidious_to_video_list_item(item, invidious_base) for item in results]
+        except invidious_proxy.InvidiousProxyError:
+            pass
+
+    return []

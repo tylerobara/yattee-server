@@ -2,12 +2,55 @@
 
 import os
 import sys
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+
+def _mock_innertube_fail(func_name):
+    """Mock an innertube function to raise InnerTubeError so fallback paths are tested."""
+    from innertube import InnerTubeError
+
+    return patch(f"routers.channels.innertube.{func_name}", new_callable=AsyncMock, side_effect=InnerTubeError("x"))
+
+
+@contextmanager
+def _mock_all_innertube_channel_fail():
+    """Mock all innertube channel functions to fail."""
+    from innertube import InnerTubeError
+
+    with (
+        patch(
+            "routers.channels.innertube.get_channel_videos",
+            new_callable=AsyncMock,
+            side_effect=InnerTubeError("x"),
+        ),
+        patch(
+            "routers.channels.innertube.get_channel_playlists",
+            new_callable=AsyncMock,
+            side_effect=InnerTubeError("x"),
+        ),
+        patch(
+            "routers.channels.innertube.get_channel_shorts",
+            new_callable=AsyncMock,
+            side_effect=InnerTubeError("x"),
+        ),
+        patch(
+            "routers.channels.innertube.get_channel_streams",
+            new_callable=AsyncMock,
+            side_effect=InnerTubeError("x"),
+        ),
+        patch(
+            "routers.channels.innertube.search_channel",
+            new_callable=AsyncMock,
+            side_effect=InnerTubeError("x"),
+        ),
+    ):
+        yield
 
 
 # =============================================================================
@@ -282,11 +325,12 @@ class TestGetChannelVideos:
 
     def test_get_videos_ytdlp_success(self, sample_channel_videos):
         """Test successful video retrieval via yt-dlp."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
-            with patch("routers.channels.get_channel_videos", new_callable=AsyncMock) as mock_videos:
-                mock_videos.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/videos")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
+                with patch("routers.channels.get_channel_videos", new_callable=AsyncMock) as mock_videos:
+                    mock_videos.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/videos")
 
         assert response.status_code == 200
         data = response.json()
@@ -296,17 +340,18 @@ class TestGetChannelVideos:
 
     def test_get_videos_invidious_success(self, sample_invidious_videos):
         """Test successful video retrieval via Invidious."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channels=True)
-            with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
-                with patch(
-                    "routers.channels.invidious_proxy.get_channel_videos", new_callable=AsyncMock
-                ) as mock_videos:
-                    mock_videos.return_value = sample_invidious_videos
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channels=True)
+                with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
                     with patch(
-                        "routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"
-                    ):
-                        response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/videos")
+                        "routers.channels.invidious_proxy.get_channel_videos", new_callable=AsyncMock
+                    ) as mock_videos:
+                        mock_videos.return_value = sample_invidious_videos
+                        with patch(
+                            "routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                        ):
+                            response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/videos")
 
         assert response.status_code == 200
         data = response.json()
@@ -356,11 +401,12 @@ class TestGetChannelPlaylists:
 
     def test_get_playlists_success(self, sample_playlists):
         """Test successful playlist retrieval."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
-            with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
-                mock_tab.return_value = sample_playlists
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/playlists")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
+                with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
+                    mock_tab.return_value = sample_playlists
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/playlists")
 
         assert response.status_code == 200
         data = response.json()
@@ -376,13 +422,18 @@ class TestGetChannelPlaylists:
             "continuation": "next_token",
         }
 
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=True)
-            with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
-                with patch("routers.channels.invidious_proxy.get_channel_playlists", new_callable=AsyncMock) as mock_pl:
-                    mock_pl.return_value = invidious_playlists
-                    with patch("routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                        response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/playlists")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=True)
+                with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
+                    with patch(
+                        "routers.channels.invidious_proxy.get_channel_playlists", new_callable=AsyncMock
+                    ) as mock_pl:
+                        mock_pl.return_value = invidious_playlists
+                        with patch(
+                            "routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                        ):
+                            response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/playlists")
 
         assert response.status_code == 200
         data = response.json()
@@ -405,11 +456,12 @@ class TestGetChannelShorts:
 
     def test_get_shorts_success(self, sample_channel_videos):
         """Test successful shorts retrieval."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
-            with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
-                mock_tab.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/shorts")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
+                with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
+                    mock_tab.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/shorts")
 
         assert response.status_code == 200
         data = response.json()
@@ -417,11 +469,12 @@ class TestGetChannelShorts:
 
     def test_get_shorts_with_pagination(self, sample_channel_videos):
         """Test shorts with continuation token."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
-            with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
-                mock_tab.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/shorts?continuation=3")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
+                with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
+                    mock_tab.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/shorts?continuation=3")
 
         assert response.status_code == 200
         mock_tab.assert_called_once()
@@ -445,11 +498,12 @@ class TestGetChannelStreams:
 
     def test_get_streams_success(self, sample_channel_videos):
         """Test successful streams retrieval."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
-            with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
-                mock_tab.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/streams")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channel_tabs=False)
+                with patch("routers.channels.get_channel_tab", new_callable=AsyncMock) as mock_tab:
+                    mock_tab.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/streams")
 
         assert response.status_code == 200
         data = response.json()
@@ -472,11 +526,12 @@ class TestChannelSearch:
 
     def test_channel_search_success(self, sample_channel_videos):
         """Test successful channel search."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
-            with patch("routers.channels.ytdlp_search_channel", new_callable=AsyncMock) as mock_search:
-                mock_search.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
+                with patch("routers.channels.ytdlp_search_channel", new_callable=AsyncMock) as mock_search:
+                    mock_search.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test")
 
         assert response.status_code == 200
         data = response.json()
@@ -496,11 +551,12 @@ class TestChannelSearch:
 
     def test_channel_search_with_pagination(self, sample_channel_videos):
         """Test channel search with pagination."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
-            with patch("routers.channels.ytdlp_search_channel", new_callable=AsyncMock) as mock_search:
-                mock_search.return_value = sample_channel_videos
-                response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test&page=2")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channels=False)
+                with patch("routers.channels.ytdlp_search_channel", new_callable=AsyncMock) as mock_search:
+                    mock_search.return_value = sample_channel_videos
+                    response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test&page=2")
 
         assert response.status_code == 200
         mock_search.assert_called_once()
@@ -509,13 +565,18 @@ class TestChannelSearch:
 
     def test_channel_search_invidious_success(self, sample_invidious_videos):
         """Test channel search via Invidious."""
-        with patch("routers.channels.get_settings") as mock_settings:
-            mock_settings.return_value = MagicMock(invidious_proxy_channels=True)
-            with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
-                with patch("routers.channels.invidious_proxy.search_channel", new_callable=AsyncMock) as mock_search:
-                    mock_search.return_value = sample_invidious_videos
-                    with patch("routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"):
-                        response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test")
+        with _mock_all_innertube_channel_fail():
+            with patch("routers.channels.get_settings") as mock_settings:
+                mock_settings.return_value = MagicMock(invidious_proxy_channels=True)
+                with patch("routers.channels.invidious_proxy.is_enabled", return_value=True):
+                    with patch(
+                        "routers.channels.invidious_proxy.search_channel", new_callable=AsyncMock
+                    ) as mock_search:
+                        mock_search.return_value = sample_invidious_videos
+                        with patch(
+                            "routers.channels.invidious_proxy.get_base_url", return_value="https://inv.example.com"
+                        ):
+                            response = self.client.get("/api/v1/channels/UCuAXFkgsw1L7xaCfnd5JJOw/search?q=test")
 
         assert response.status_code == 200
 
