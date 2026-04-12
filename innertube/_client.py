@@ -257,9 +257,9 @@ async def innertube_post(endpoint: str, body: Dict[str, Any], use_cookies: bool 
                 sapisidhash = _generate_sapisidhash(cookies)
                 if sapisidhash:
                     headers["Authorization"] = sapisidhash
-                logger.info(f"[InnerTube] Using {len(cookies)} cookies for {endpoint} (auth={bool(sapisidhash)})")
+                logger.debug(f"[InnerTube] Using {len(cookies)} cookies for {endpoint} (auth={bool(sapisidhash)})")
             else:
-                logger.info("[InnerTube] No YouTube cookies found in credentials")
+                logger.debug("[InnerTube] No YouTube cookies found in credentials")
         except Exception as e:
             logger.warning(f"[InnerTube] Cookie loading failed (continuing without): {e}")
 
