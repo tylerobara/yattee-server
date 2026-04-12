@@ -85,33 +85,57 @@ async def get_channel(channel_id: str):
     """Get channel details (Invidious-compatible)."""
     s = get_settings()
 
-    # For YouTube channels, try Invidious proxy first if enabled (faster)
+    # For YouTube channels: InnerTube → Invidious → yt-dlp
     if _is_youtube_channel_id(channel_id):
+        # Try InnerTube first (banners, avatars, description, sub count)
+        try:
+            data = await innertube.get_channel_info(channel_id)
+            if data:
+                thumbnails = [
+                    Thumbnail(quality="default", url=t["url"], width=t.get("width"), height=t.get("height"))
+                    for t in data.get("authorThumbnails", [])
+                ]
+                banners = [
+                    Thumbnail(quality="default", url=b["url"], width=b.get("width"), height=b.get("height"))
+                    for b in data.get("authorBanners", [])
+                ]
+                return ChannelResponse(
+                    authorId=data.get("authorId", channel_id),
+                    author=data.get("author", ""),
+                    description=data.get("description"),
+                    subCount=data.get("subCount"),
+                    totalViews=None,
+                    authorThumbnails=thumbnails,
+                    authorBanners=banners,
+                    authorVerified=data.get("authorVerified", False),
+                )
+        except innertube.InnerTubeError as e:
+            logger.debug(f"[Channels] InnerTube channel info error for {channel_id}: {e}")
+
+        # Fall back to Invidious
         if s.invidious_proxy_channels and invidious_proxy.is_enabled():
             try:
                 data = await invidious_proxy.get_channel(channel_id)
                 if data:
                     invidious_base = invidious_proxy.get_base_url()
-                    thumbnails = []
-                    for thumb in data.get("authorThumbnails", []):
-                        thumbnails.append(
-                            Thumbnail(
-                                quality=thumb.get("quality", "default"),
-                                url=resolve_invidious_url(thumb.get("url", ""), invidious_base),
-                                width=thumb.get("width"),
-                                height=thumb.get("height"),
-                            )
+                    thumbnails = [
+                        Thumbnail(
+                            quality=thumb.get("quality", "default"),
+                            url=resolve_invidious_url(thumb.get("url", ""), invidious_base),
+                            width=thumb.get("width"),
+                            height=thumb.get("height"),
                         )
-                    banners = []
-                    for banner in data.get("authorBanners", []):
-                        banners.append(
-                            Thumbnail(
-                                quality=banner.get("quality", "default"),
-                                url=resolve_invidious_url(banner.get("url", ""), invidious_base),
-                                width=banner.get("width"),
-                                height=banner.get("height"),
-                            )
+                        for thumb in data.get("authorThumbnails", [])
+                    ]
+                    banners = [
+                        Thumbnail(
+                            quality=banner.get("quality", "default"),
+                            url=resolve_invidious_url(banner.get("url", ""), invidious_base),
+                            width=banner.get("width"),
+                            height=banner.get("height"),
                         )
+                        for banner in data.get("authorBanners", [])
+                    ]
                     return ChannelResponse(
                         authorId=data.get("authorId", channel_id),
                         author=data.get("author", ""),
@@ -123,7 +147,6 @@ async def get_channel(channel_id: str):
                         authorVerified=data.get("authorVerified", False),
                     )
             except invidious_proxy.InvidiousProxyError:
-                # Fall through to yt-dlp
                 pass
 
         # Fall back to yt-dlp for YouTube

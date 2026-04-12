@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from innertube._client import _build_context, _get_client_version, innertube_post
 from innertube._converters import (
+    _parse_count_text,
     grid_playlist_to_invidious,
     grid_video_to_invidious,
     rich_item_to_invidious,
@@ -238,3 +239,107 @@ async def get_channel_playlists(
         items, next_cont = _extract_items_from_tab(data)
 
     return {"playlists": items, "continuation": next_cont}
+
+
+async def get_channel_info(channel_id: str) -> Optional[Dict[str, Any]]:
+    """Get channel metadata (banners, avatars, description, sub count) via InnerTube.
+
+    Args:
+        channel_id: YouTube channel ID (UC...) or handle (@name)
+
+    Returns:
+        Dict with channel metadata, or None if not available
+    """
+    body = {"browseId": channel_id}
+    data = await innertube_post("browse", body)
+
+    # Extract from pageHeaderViewModel
+    phvm = (
+        data.get("header", {})
+        .get("pageHeaderRenderer", {})
+        .get("content", {})
+        .get("pageHeaderViewModel", {})
+    )
+    if not phvm:
+        return None
+
+    # Channel name from metadata.title or title field
+    author = data.get("metadata", {}).get("channelMetadataRenderer", {}).get("title", "")
+    if not author:
+        title_obj = phvm.get("title", {}).get("dynamicTextViewModel", {})
+        author = title_obj.get("text", {}).get("content", "")
+
+    # Resolved channel ID from metadata
+    resolved_id = data.get("metadata", {}).get("channelMetadataRenderer", {}).get("externalId", channel_id)
+
+    # Banners
+    banners = []
+    banner_sources = (
+        phvm.get("banner", {})
+        .get("imageBannerViewModel", {})
+        .get("image", {})
+        .get("sources", [])
+    )
+    for src in banner_sources:
+        banners.append({
+            "url": src.get("url", ""),
+            "width": src.get("width"),
+            "height": src.get("height"),
+        })
+
+    # Avatars
+    thumbnails = []
+    avatar_sources = (
+        phvm.get("image", {})
+        .get("decoratedAvatarViewModel", {})
+        .get("avatar", {})
+        .get("avatarViewModel", {})
+        .get("image", {})
+        .get("sources", [])
+    )
+    for src in avatar_sources:
+        thumbnails.append({
+            "url": src.get("url", ""),
+            "width": src.get("width"),
+            "height": src.get("height"),
+        })
+
+    # Description
+    description = (
+        phvm.get("description", {})
+        .get("descriptionPreviewViewModel", {})
+        .get("description", {})
+        .get("content", "")
+    )
+
+    # Parse metadata rows for subscriber count and verified status
+    sub_count = None
+    verified = False
+    metadata_rows = (
+        phvm.get("metadata", {})
+        .get("contentMetadataViewModel", {})
+        .get("metadataRows", [])
+    )
+    for row in metadata_rows:
+        for part in row.get("metadataParts", []):
+            text = part.get("text", {}).get("content", "")
+            if "subscriber" in text.lower():
+                sub_count = _parse_count_text(text)
+
+    # Check for verification badge
+    for badge in data.get("header", {}).get("pageHeaderRenderer", {}).get("badges", []):
+        if badge.get("metadataBadgeRenderer", {}).get("style") == "BADGE_STYLE_TYPE_VERIFIED":
+            verified = True
+            break
+
+    logger.info(f"[InnerTube] Channel info {channel_id}: {author}, {len(banners)} banners, {len(thumbnails)} avatars")
+
+    return {
+        "authorId": resolved_id,
+        "author": author,
+        "description": description or None,
+        "subCount": sub_count,
+        "authorThumbnails": thumbnails,
+        "authorBanners": banners,
+        "authorVerified": verified,
+    }

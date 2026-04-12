@@ -4,6 +4,7 @@ Provides access to YouTube data without requiring an Invidious instance.
 """
 
 from innertube._browse import (
+    get_channel_info,
     get_channel_playlists,
     get_channel_shorts,
     get_channel_streams,
@@ -19,6 +20,7 @@ from innertube._thumbnails import proxy_thumbnail
 
 __all__ = [
     "InnerTubeError",
+    "get_channel_info",
     "get_channel_playlists",
     "get_channel_shorts",
     "get_channel_streams",
