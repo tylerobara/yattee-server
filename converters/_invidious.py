@@ -105,7 +105,9 @@ def invidious_to_video_response(
                 url = f"{url}&token={stream_token}"
         else:
             # Invidious with local=true returns relative URLs (/videoplayback?...)
-            # that must be resolved against the Invidious instance.
+            # that must be routed through the companion proxy endpoint.
+            if url.startswith("/videoplayback"):
+                url = "/companion" + url
             url = resolve_invidious_url(url, invidious_base_url)
         format_streams.append(
             FormatStream(
