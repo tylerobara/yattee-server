@@ -27,6 +27,7 @@ document.addEventListener('alpine:init', () => {
         invidious_proxy_playlists: true,
         invidious_proxy_captions: true,
         invidious_proxy_thumbnails: true,
+        invidious_local_streams: false,
         invidious_author_thumbnails: false,
 
         feed_fetch_interval: 21600,
@@ -83,6 +84,7 @@ document.addEventListener('alpine:init', () => {
                 this.invidious_proxy_playlists = settings.invidious_proxy_playlists !== false;
                 this.invidious_proxy_captions = settings.invidious_proxy_captions || false;
                 this.invidious_proxy_thumbnails = settings.invidious_proxy_thumbnails !== false;
+                this.invidious_local_streams = settings.invidious_local_streams || false;
                 this.invidious_author_thumbnails = settings.invidious_author_thumbnails || false;
                 this.feed_fetch_interval = settings.feed_fetch_interval || 21600;
                 this.feed_fetch_interval_minutes = Math.round(this.feed_fetch_interval / 60);
@@ -134,6 +136,7 @@ document.addEventListener('alpine:init', () => {
                     invidious_proxy_playlists: this.invidious_proxy_playlists,
                     invidious_proxy_captions: this.invidious_proxy_captions,
                     invidious_proxy_thumbnails: this.invidious_proxy_thumbnails,
+                    invidious_local_streams: this.invidious_local_streams,
                     invidious_author_thumbnails: this.invidious_author_thumbnails,
                     feed_fetch_interval: (parseInt(this.feed_fetch_interval_minutes) || 30) * 60,
                     feed_channel_delay: parseInt(this.feed_channel_delay) || 2,

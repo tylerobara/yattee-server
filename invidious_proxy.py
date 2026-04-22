@@ -206,7 +206,10 @@ async def get_channel_thumbnails(channel_id: str) -> List[Thumbnail]:
 async def get_video(video_id: str) -> Optional[dict]:
     """Get video info from Invidious."""
     encoded_id = urllib.parse.quote(video_id)
-    return await fetch_json(f"/api/v1/videos/{encoded_id}")
+    endpoint = f"/api/v1/videos/{encoded_id}"
+    if get_settings().invidious_local_streams:
+        endpoint += "?local=true"
+    return await fetch_json(endpoint)
 
 
 async def get_playlist(playlist_id: str) -> Optional[dict]:

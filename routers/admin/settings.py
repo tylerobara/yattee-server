@@ -59,6 +59,7 @@ class SettingsResponse(BaseModel):
     invidious_proxy_playlists: bool
     invidious_proxy_captions: bool
     invidious_proxy_thumbnails: bool
+    invidious_local_streams: bool
     feed_fetch_interval: int
     feed_channel_delay: int
     feed_max_videos: int
@@ -100,6 +101,7 @@ class SettingsUpdate(BaseModel):
     invidious_proxy_playlists: Optional[bool] = None
     invidious_proxy_captions: Optional[bool] = None
     invidious_proxy_thumbnails: Optional[bool] = None
+    invidious_local_streams: Optional[bool] = None
     feed_fetch_interval: Optional[int] = None
     feed_channel_delay: Optional[int] = None
     feed_max_videos: Optional[int] = None

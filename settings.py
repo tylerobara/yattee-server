@@ -60,6 +60,15 @@ class Settings(BaseModel):
     invidious_proxy_playlists: bool = True
     invidious_proxy_captions: bool = True
     invidious_proxy_thumbnails: bool = True
+    invidious_local_streams: bool = Field(
+        default=False,
+        description=(
+            "When true, request local=true from Invidious so stream URLs are "
+            "proxied through the Invidious instance (companion) instead of "
+            "pointing directly at googlevideo.com. Has no effect when the "
+            "site's proxy_streaming is on (yattee-server proxies instead)."
+        ),
+    )
 
     # Feed
     feed_fetch_interval: int = Field(default=21600, ge=300, le=86400)
