@@ -137,6 +137,8 @@ def invidious_to_video_response(
             if stream_token:
                 url = f"{url}&token={stream_token}"
         else:
+            if url.startswith("/videoplayback"):
+                url = "/companion" + url
             url = resolve_invidious_url(url, invidious_base_url)
 
         audio_track = None
