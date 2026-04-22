@@ -119,6 +119,8 @@ class VideoResponse(BaseModel):
     originalUrl: Optional[str] = None  # Original URL for re-extraction on stream expiry
     # Recommended videos (only available when using Invidious proxy)
     recommendedVideos: Optional[List["VideoListItem"]] = None
+    # Which extraction path served this response: "invidious", "hybrid" (InnerTube + yt-dlp), "ytdlp"
+    extractionMethod: Optional[str] = None
 
 
 class VideoListItem(BaseModel):
