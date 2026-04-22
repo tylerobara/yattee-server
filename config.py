@@ -39,6 +39,10 @@ SECURE_COOKIES = os.getenv("SECURE_COOKIES", "true").lower() in ("true", "1", "y
 # Skip TLS certificate verification in yt-dlp (not recommended for production)
 YTDLP_SKIP_TLS_VERIFY = os.getenv("YTDLP_SKIP_TLS_VERIFY", "false").lower() in ("true", "1", "yes")
 
+# HTTP proxy for YouTube-bound egress (yt-dlp, InnerTube, Invidious fallback).
+# Format: http://[user:pass@]host:port or socks5://host:port
+YT_EGRESS_PROXY = os.getenv("YT_EGRESS_PROXY") or None
+
 # Auto-provisioning (optional, for automated deployments)
 # When ADMIN_USERNAME and ADMIN_PASSWORD are both set, an admin user is auto-created/updated on startup
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")
