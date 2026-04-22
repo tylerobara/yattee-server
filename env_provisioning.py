@@ -15,9 +15,11 @@ def apply_env_provisioning():
 
     - ADMIN_USERNAME + ADMIN_PASSWORD: creates or updates admin user
     - INVIDIOUS_INSTANCE_URL: configures Invidious instance and enables proxy
+    - YT_EGRESS_PROXY: configures HTTP/SOCKS proxy for YouTube-bound traffic
     """
     _provision_admin_user()
     _provision_invidious()
+    _provision_egress_proxy()
 
 
 def _provision_admin_user():
@@ -49,3 +51,15 @@ def _provision_invidious():
     s.invidious_enabled = True
     settings_module.save_settings(s)
     logger.info("ENV provisioning: configured Invidious instance '%s'", url)
+
+
+def _provision_egress_proxy():
+    """Configure YouTube egress proxy from env var."""
+    url = config.YT_EGRESS_PROXY
+    if not url:
+        return
+
+    s = settings_module.load_settings()
+    s.yt_egress_proxy = url
+    settings_module.save_settings(s)
+    logger.info("ENV provisioning: configured YT egress proxy")

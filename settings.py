@@ -28,6 +28,15 @@ class Settings(BaseModel):
     default_search_results: int = Field(default=20, ge=5, le=50)
     max_search_results: int = Field(default=50, ge=10, le=100)
 
+    # YouTube egress proxy (used by yt-dlp + InnerTube)
+    yt_egress_proxy: Optional[str] = Field(
+        default=None,
+        description=(
+            "HTTP/SOCKS proxy for YouTube-bound traffic. "
+            "Format: http://[user:pass@]host:port or socks5://host:port"
+        ),
+    )
+
     # InnerTube (direct YouTube API)
     innertube_enabled: bool = True
 
