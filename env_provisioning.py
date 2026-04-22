@@ -61,5 +61,6 @@ def _provision_egress_proxy():
 
     s = settings_module.load_settings()
     s.yt_egress_proxy = url
+    s.yt_egress_proxy_enabled = True
     settings_module.save_settings(s)
     logger.info("ENV provisioning: configured YT egress proxy")

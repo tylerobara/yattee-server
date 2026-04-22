@@ -212,7 +212,7 @@ async def get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(15),
             follow_redirects=True,
-            proxy=settings_module.get_settings().yt_egress_proxy,
+            proxy=settings_module.get_settings().effective_yt_egress_proxy(),
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

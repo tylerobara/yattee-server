@@ -420,10 +420,20 @@
                 <!-- Network Section -->
                 <div class="mb-8">
                     <h3 class="text-lg font-medium mb-4 pb-2 border-b border-border">Network</h3>
+                    <div class="flex items-center gap-3 mb-4">
+                        <label class="toggle">
+                            <input type="checkbox" x-model="yt_egress_proxy_enabled">
+                            <span class="toggle-slider"></span>
+                        </label>
+                        <div>
+                            <label class="font-medium cursor-pointer">Enable YouTube Egress Proxy</label>
+                            <small class="block text-muted text-sm">Disable to bypass the proxy without clearing the value below</small>
+                        </div>
+                    </div>
                     <div class="mb-4">
-                        <label for="yt-egress-proxy" class="block mb-2 font-medium">YouTube Egress Proxy</label>
-                        <input type="text" id="yt-egress-proxy" placeholder="http://host:port or socks5://host:port" class="input-base" x-model="yt_egress_proxy">
-                        <small class="block text-muted text-sm mt-1">Routes yt-dlp and InnerTube YouTube traffic through this proxy. Leave empty to disable. Auto-provisioned from <code>YT_EGRESS_PROXY</code> env var if set.</small>
+                        <label for="yt-egress-proxy" class="block mb-2 font-medium">YouTube Egress Proxy URL</label>
+                        <input type="text" id="yt-egress-proxy" placeholder="http://host:port or socks5://host:port" class="input-base" x-model="yt_egress_proxy" :disabled="!yt_egress_proxy_enabled">
+                        <small class="block text-muted text-sm mt-1">Routes yt-dlp and InnerTube YouTube traffic through this proxy. Auto-provisioned from <code>YT_EGRESS_PROXY</code> env var if set.</small>
                     </div>
                 </div>
 

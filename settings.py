@@ -29,6 +29,13 @@ class Settings(BaseModel):
     max_search_results: int = Field(default=50, ge=10, le=100)
 
     # YouTube egress proxy (used by yt-dlp + InnerTube)
+    yt_egress_proxy_enabled: bool = Field(
+        default=True,
+        description=(
+            "When false, the configured proxy is ignored — "
+            "useful for temporary disable without losing the value."
+        ),
+    )
     yt_egress_proxy: Optional[str] = Field(
         default=None,
         description=(
@@ -91,6 +98,11 @@ class Settings(BaseModel):
     # Proxy/download cleanup
     proxy_download_max_age: int = Field(default=86400, ge=60, le=604800)
     proxy_max_concurrent_downloads: int = Field(default=3, ge=1, le=20)
+
+
+    def effective_yt_egress_proxy(self) -> Optional[str]:
+        """Return the egress proxy URL only if both configured and enabled."""
+        return self.yt_egress_proxy if self.yt_egress_proxy_enabled and self.yt_egress_proxy else None
 
 
 # In-memory cached settings

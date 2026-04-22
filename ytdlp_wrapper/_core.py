@@ -70,7 +70,8 @@ async def run_ytdlp(*args: str, timeout: Optional[int] = None, url: Optional[str
         except (ValueError, KeyError, OSError) as e:
             logger.warning(f"Failed to load credentials for {url}: {e}")
 
-    proxy_args = ["--proxy", s.yt_egress_proxy] if s.yt_egress_proxy else []
+    proxy = s.effective_yt_egress_proxy()
+    proxy_args = ["--proxy", proxy] if proxy else []
 
     # Build final args: proxy + credentials + flags + '--' + urls
     # The '--' separator prevents URLs from being interpreted as flags
