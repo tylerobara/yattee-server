@@ -103,6 +103,10 @@ def invidious_to_video_response(
             url = f"{base_url}/proxy/fast/{video_id}?itag={itag}"
             if stream_token:
                 url = f"{url}&token={stream_token}"
+        else:
+            # Invidious with local=true returns relative URLs (/videoplayback?...)
+            # that must be resolved against the Invidious instance.
+            url = resolve_invidious_url(url, invidious_base_url)
         format_streams.append(
             FormatStream(
                 url=url,
@@ -130,6 +134,8 @@ def invidious_to_video_response(
             url = f"{base_url}/proxy/fast/{video_id}?itag={itag}"
             if stream_token:
                 url = f"{url}&token={stream_token}"
+        else:
+            url = resolve_invidious_url(url, invidious_base_url)
 
         audio_track = None
         if fmt.get("audioTrack"):
