@@ -11,6 +11,8 @@ document.addEventListener('alpine:init', () => {
         cache_avatar_ttl: 86400,
         cache_extract_ttl: 900,
 
+        innertube_enabled: true,
+
         invidious_enabled: true,
         invidious_instance: '',
         invidious_timeout: 10,
@@ -24,8 +26,8 @@ document.addEventListener('alpine:init', () => {
         invidious_proxy_thumbnails: true,
         invidious_author_thumbnails: false,
 
-        feed_fetch_interval: 1800,
-        feed_fetch_interval_minutes: 30,
+        feed_fetch_interval: 21600,
+        feed_fetch_interval_minutes: 360,
         feed_channel_delay: 2,
         feed_max_videos: 30,
         feed_video_max_age: 30,
@@ -64,6 +66,7 @@ document.addEventListener('alpine:init', () => {
                 this.cache_channel_ttl = settings.cache_channel_ttl || 1800;
                 this.cache_avatar_ttl = settings.cache_avatar_ttl || 86400;
                 this.cache_extract_ttl = settings.cache_extract_ttl || 900;
+                this.innertube_enabled = settings.innertube_enabled !== false;
                 this.invidious_enabled = settings.invidious_enabled !== false;
                 this.invidious_instance = settings.invidious_instance || '';
                 this.invidious_timeout = settings.invidious_timeout || 10;
@@ -76,7 +79,7 @@ document.addEventListener('alpine:init', () => {
                 this.invidious_proxy_captions = settings.invidious_proxy_captions || false;
                 this.invidious_proxy_thumbnails = settings.invidious_proxy_thumbnails !== false;
                 this.invidious_author_thumbnails = settings.invidious_author_thumbnails || false;
-                this.feed_fetch_interval = settings.feed_fetch_interval || 1800;
+                this.feed_fetch_interval = settings.feed_fetch_interval || 21600;
                 this.feed_fetch_interval_minutes = Math.round(this.feed_fetch_interval / 60);
                 this.feed_channel_delay = settings.feed_channel_delay || 2;
                 this.feed_max_videos = settings.feed_max_videos || 30;
@@ -112,6 +115,7 @@ document.addEventListener('alpine:init', () => {
                     cache_channel_ttl: parseInt(this.cache_channel_ttl) || 1800,
                     cache_avatar_ttl: parseInt(this.cache_avatar_ttl) || 86400,
                     cache_extract_ttl: parseInt(this.cache_extract_ttl) || 900,
+                    innertube_enabled: this.innertube_enabled,
                     invidious_enabled: this.invidious_enabled,
                     invidious_instance: this.invidious_instance || null,
                     invidious_timeout: parseInt(this.invidious_timeout) || 10,

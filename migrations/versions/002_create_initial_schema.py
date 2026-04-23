@@ -184,7 +184,7 @@ def upgrade() -> None:
             sa.Column("invidious_proxy_playlists", sa.Integer(), server_default=sa.text("1")),
             sa.Column("invidious_proxy_captions", sa.Integer(), server_default=sa.text("1")),
             sa.Column("invidious_proxy_thumbnails", sa.Integer(), server_default=sa.text("1")),
-            sa.Column("feed_fetch_interval", sa.Integer(), server_default=sa.text("1800")),
+            sa.Column("feed_fetch_interval", sa.Integer(), server_default=sa.text("21600")),
             sa.Column("feed_channel_delay", sa.Integer(), server_default=sa.text("2")),
             sa.Column("feed_max_videos", sa.Integer(), server_default=sa.text("30")),
             sa.Column("feed_video_max_age", sa.Integer(), server_default=sa.text("30")),
