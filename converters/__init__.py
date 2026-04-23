@@ -31,6 +31,7 @@ from converters._invidious import (
     invidious_to_video_list_item,
     invidious_to_video_response,
 )
+from converters._storyboards import convert_storyboards
 from converters._ytdlp import (
     construct_author_url,
     get_author_thumbnail_url,
@@ -62,6 +63,8 @@ __all__ = [
     "convert_thumbnails",
     # _captions
     "convert_captions",
+    # _storyboards
+    "convert_storyboards",
     # _ytdlp
     "get_author_thumbnail_url",
     "construct_author_url",

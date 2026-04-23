@@ -13,6 +13,7 @@ from converters import (
     construct_author_url,
     convert_captions,
     convert_formats,
+    convert_storyboards,
     convert_thumbnails,
     format_published_text,
     format_subscriber_count,
@@ -1165,3 +1166,357 @@ class TestInvidiousToVideoResponseCaptions:
         assert len(result.captions) == 1
         caption = result.captions[0]
         assert "token=" not in caption.url
+
+
+# =============================================================================
+# Tests for convert_storyboards
+# =============================================================================
+
+
+def _make_storyboard_format(
+    format_id="sb1",
+    width=80,
+    height=45,
+    columns=10,
+    rows=10,
+    fragments=None,
+):
+    """Helper to build a yt-dlp storyboard format entry."""
+    if fragments is None:
+        fragments = [
+            {"url": "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M0.jpg?sqp=-abc", "duration": 26.5},
+            {"url": "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M1.jpg?sqp=-abc", "duration": 26.5},
+        ]
+    return {
+        "format_id": format_id,
+        "ext": "mhtml",
+        "vcodec": "images",
+        "url": fragments[0]["url"] if fragments else "",
+        "width": width,
+        "height": height,
+        "columns": columns,
+        "rows": rows,
+        "fragments": fragments,
+    }
+
+
+class TestConvertStoryboards:
+    def test_basic_conversion(self):
+        """Test all fields are mapped correctly."""
+        formats = [_make_storyboard_format()]
+        result = convert_storyboards(formats)
+        assert len(result) == 1
+        sb = result[0]
+        assert sb.width == 80
+        assert sb.height == 45
+        assert sb.storyboardWidth == 10
+        assert sb.storyboardHeight == 10
+        assert sb.storyboardCount == 2
+        assert sb.count == 10 * 10 * 2
+        # url is deliberately unset — Yattee clients treat it as a proxy endpoint,
+        # and a direct ytimg URL ignores the `?storyboard=N` param and always
+        # returns sheet 0. See models.Storyboard for the rationale.
+        assert sb.url is None
+
+    def test_template_url_derivation(self):
+        """Test M0 in URL is replaced with M$M in templateUrl."""
+        formats = [_make_storyboard_format()]
+        result = convert_storyboards(formats)
+        assert result[0].templateUrl == "https://i.ytimg.com/sb/VIDEO_ID/storyboard3_L1/M$M.jpg?sqp=-abc"
+
+    def test_interval_in_milliseconds(self):
+        """Fragment duration is per-sheet; interval must be per-frame (ms)."""
+        # 10x10 sheet covering 5.0s -> 50 ms per frame
+        formats = [_make_storyboard_format(fragments=[
+            {"url": "https://example.com/M0.jpg", "duration": 5.0},
+        ])]
+        result = convert_storyboards(formats)
+        assert result[0].interval == 50
+
+    def test_count_calculation(self):
+        """Test count = columns * rows * number of fragments."""
+        formats = [_make_storyboard_format(columns=5, rows=5, fragments=[
+            {"url": "https://example.com/M0.jpg", "duration": 10.0},
+            {"url": "https://example.com/M1.jpg", "duration": 10.0},
+            {"url": "https://example.com/M2.jpg", "duration": 10.0},
+        ])]
+        result = convert_storyboards(formats)
+        assert result[0].count == 5 * 5 * 3
+
+    def test_multiple_resolutions_sorted(self):
+        """Test multiple storyboard formats are converted and sorted by width."""
+        formats = [
+            _make_storyboard_format(format_id="sb2", width=160, height=90),
+            _make_storyboard_format(format_id="sb0", width=48, height=27),
+            _make_storyboard_format(format_id="sb1", width=80, height=45),
+        ]
+        result = convert_storyboards(formats)
+        assert len(result) == 3
+        assert [sb.width for sb in result] == [48, 80, 160]
+
+    def test_skips_missing_fragments(self):
+        """Format with no fragments is skipped."""
+        fmt = _make_storyboard_format()
+        del fmt["fragments"]
+        formats = [fmt]
+        assert convert_storyboards(formats) == []
+
+    def test_skips_empty_fragments(self):
+        """Format with empty fragments list is skipped."""
+        formats = [_make_storyboard_format(fragments=[])]
+        assert convert_storyboards(formats) == []
+
+    def test_skips_missing_dimensions(self):
+        """Format missing columns/rows/width/height is skipped."""
+        for key in ("columns", "rows", "width", "height"):
+            fmt = _make_storyboard_format()
+            del fmt[key]
+            assert convert_storyboards([fmt]) == [], f"Should skip when {key} is missing"
+
+    def test_skips_fragment_without_url(self):
+        """Fragment without url is skipped."""
+        fmt = _make_storyboard_format()
+        fmt["fragments"] = [{"duration": 10.0}]
+        assert convert_storyboards([fmt]) == []
+
+    def test_empty_formats(self):
+        assert convert_storyboards([]) == []
+
+    def test_none_formats(self):
+        assert convert_storyboards(None) == []
+
+    def test_ignores_non_storyboard_formats(self):
+        """Only storyboard formats are extracted, video/audio formats are ignored."""
+        formats = [
+            {"format_id": "18", "ext": "mp4", "url": "https://example.com/video.mp4", "vcodec": "avc1"},
+            _make_storyboard_format(),
+            {"format_id": "140", "ext": "m4a", "url": "https://example.com/audio.m4a", "acodec": "mp4a"},
+        ]
+        result = convert_storyboards(formats)
+        assert len(result) == 1
+        assert result[0].width == 80
+
+
+# =============================================================================
+# Tests for innertube_player_to_invidious_video
+# =============================================================================
+
+
+class TestInnerTubePlayerToInvidiousVideo:
+    """Tests for the InnerTube /player + /next to Invidious-shape converter."""
+
+    def _player(self, **overrides):
+        base = {
+            "videoDetails": {
+                "videoId": "dQw4w9WgXcQ",
+                "title": "Test Title",
+                "author": "Rick Astley",
+                "channelId": "UCuAXFkgsw1L7xaCfnd5JJOw",
+                "lengthSeconds": "212",
+                "viewCount": "1500000000",
+                "isLive": False,
+                "shortDescription": "Short description",
+                "keywords": ["music"],
+            },
+            "streamingData": {
+                "formats": [
+                    {
+                        "itag": 18,
+                        "mimeType": 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+                        "bitrate": 500000,
+                        "width": 640,
+                        "height": 360,
+                        "quality": "medium",
+                        "qualityLabel": "360p",
+                        "fps": 30,
+                        "contentLength": "12345678",
+                    }
+                ],
+                "adaptiveFormats": [
+                    {
+                        "itag": 140,
+                        "mimeType": 'audio/mp4; codecs="mp4a.40.2"',
+                        "bitrate": 128000,
+                        "contentLength": "3456789",
+                        "audioQuality": "AUDIO_QUALITY_MEDIUM",
+                        "audioTrack": {
+                            "id": "en.4",
+                            "displayName": "English (original)",
+                            "audioIsDefault": True,
+                        },
+                    },
+                ],
+                "hlsManifestUrl": "https://manifest/master.m3u8",
+                "dashManifestUrl": "https://manifest/manifest.mpd",
+            },
+            "microformat": {
+                "playerMicroformatRenderer": {
+                    "publishDate": "2009-10-25",
+                }
+            },
+            "captions": {
+                "playerCaptionsTracklistRenderer": {
+                    "captionTracks": [
+                        {
+                            "baseUrl": "https://yt/caption?v=xyz",
+                            "name": {"simpleText": "English"},
+                            "languageCode": "en",
+                        },
+                        {
+                            "baseUrl": "https://yt/caption?v=auto",
+                            "name": {"simpleText": "English (auto-generated)"},
+                            "languageCode": "en",
+                            "kind": "asr",
+                        },
+                    ]
+                }
+            },
+            "storyboards": {},
+        }
+        base.update(overrides)
+        return base
+
+    def test_basic_shape(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        result = innertube_player_to_invidious_video(self._player(), {})
+        assert result["videoId"] == "dQw4w9WgXcQ"
+        assert result["title"] == "Test Title"
+        assert result["author"] == "Rick Astley"
+        assert result["authorId"] == "UCuAXFkgsw1L7xaCfnd5JJOw"
+        assert result["lengthSeconds"] == 212
+        assert result["viewCount"] == 1500000000
+        assert result["liveNow"] is False
+        # Published date parsed from microformat
+        assert result["published"] is not None
+        # Thumbnails use standard ytimg URLs keyed on videoId
+        assert any("i.ytimg.com" in t["url"] for t in result["videoThumbnails"])
+
+    def test_formats_parsed_without_url(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        result = innertube_player_to_invidious_video(self._player(), {})
+        fmt = result["formatStreams"][0]
+        assert fmt["itag"] == "18"
+        assert fmt["url"] == ""  # ciphered → empty, caller merges yt-dlp URL
+        assert fmt["container"] == "mp4"
+        assert "avc1.42001E" in fmt["encoding"]
+        assert fmt["height"] == 360
+
+    def test_adaptive_audio_track(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        result = innertube_player_to_invidious_video(self._player(), {})
+        audio = result["adaptiveFormats"][0]
+        assert audio["itag"] == "140"
+        assert audio["container"] == "mp4"
+        # Audio-only: no resolution/width/height
+        assert audio["width"] is None
+        assert audio["height"] is None
+        assert audio["audioTrack"]["isDefault"] is True
+        assert audio["audioTrack"]["id"] == "en.4"
+
+    def test_captions(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        result = innertube_player_to_invidious_video(self._player(), {})
+        captions = result["captions"]
+        assert len(captions) == 2
+        assert captions[0]["label"] == "English"
+        assert captions[0]["languageCode"] == "en"
+        assert captions[0]["auto_generated"] is False
+        assert captions[1]["auto_generated"] is True
+
+    def test_hls_dash_passthrough(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        result = innertube_player_to_invidious_video(self._player(), {})
+        assert result["hlsUrl"] == "https://manifest/master.m3u8"
+        assert result["dashUrl"] == "https://manifest/manifest.mpd"
+
+    def test_author_thumbnails_from_next(self):
+        from innertube._converters import innertube_player_to_invidious_video
+
+        nxt = {
+            "contents": {
+                "twoColumnWatchNextResults": {
+                    "results": {
+                        "results": {
+                            "contents": [
+                                {
+                                    "videoSecondaryInfoRenderer": {
+                                        "owner": {
+                                            "videoOwnerRenderer": {
+                                                "thumbnail": {
+                                                    "thumbnails": [
+                                                        {"url": "https://yt3/a.jpg", "width": 48, "height": 48},
+                                                        {"url": "https://yt3/b.jpg", "width": 176, "height": 176},
+                                                    ]
+                                                }
+                                            }
+                                        },
+                                        "attributedDescription": {"content": "Full description!"},
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        result = innertube_player_to_invidious_video(self._player(), nxt)
+        assert len(result["authorThumbnails"]) == 2
+        assert result["authorThumbnails"][1]["url"] == "https://yt3/b.jpg"
+        assert result["description"] == "Full description!"
+
+
+class TestMergeStreamUrls:
+    """Tests for innertube._video.merge_stream_urls."""
+
+    def test_joins_by_itag(self):
+        from innertube import merge_stream_urls
+
+        it = {
+            "formatStreams": [{"itag": "18", "url": "", "container": "mp4"}],
+            "adaptiveFormats": [{"itag": "140", "url": "", "container": "mp4"}],
+        }
+        ytdlp = [
+            {"format_id": "18", "url": "https://yt/18"},
+            {"format_id": "140", "url": "https://yt/140"},
+        ]
+        fs, af = merge_stream_urls(it, ytdlp)
+        assert fs[0]["url"] == "https://yt/18"
+        assert af[0]["url"] == "https://yt/140"
+
+    def test_drops_missing_itags(self):
+        from innertube import merge_stream_urls
+
+        it = {
+            "formatStreams": [{"itag": "18", "url": ""}],
+            "adaptiveFormats": [{"itag": "999", "url": ""}],
+        }
+        ytdlp = [{"format_id": "18", "url": "https://yt/18"}]
+        fs, af = merge_stream_urls(it, ytdlp)
+        assert len(fs) == 1
+        assert af == []
+
+    def test_ignores_ytdlp_entries_without_url(self):
+        from innertube import merge_stream_urls
+
+        it = {"formatStreams": [{"itag": "18"}], "adaptiveFormats": []}
+        ytdlp = [{"format_id": "18", "url": None}]
+        fs, af = merge_stream_urls(it, ytdlp)
+        assert fs == []
+        assert af == []
+
+    def test_ignores_non_digit_format_ids(self):
+        """HLS format_ids like 'hls-480' should not be merged."""
+        from innertube import merge_stream_urls
+
+        it = {"formatStreams": [{"itag": "18", "url": ""}], "adaptiveFormats": []}
+        ytdlp = [
+            {"format_id": "hls-480", "url": "https://yt/hls"},
+            {"format_id": "18", "url": "https://yt/18"},
+        ]
+        fs, _af = merge_stream_urls(it, ytdlp)
+        assert fs[0]["url"] == "https://yt/18"

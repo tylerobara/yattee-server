@@ -12,6 +12,7 @@ from converters._formatting import (
     get_valid_timestamp,
     parse_upload_date,
 )
+from converters._storyboards import convert_storyboards
 from models import (
     PlaylistListItem,
     Thumbnail,
@@ -106,6 +107,8 @@ def ytdlp_to_video_response(
         user_id=user_id,
     )
 
+    storyboards = convert_storyboards(info.get("formats"))
+
     # Get subscriber count and format it
     sub_count = info.get("channel_follower_count")
     sub_count_text = format_subscriber_count(sub_count)
@@ -148,6 +151,7 @@ def ytdlp_to_video_response(
         formatStreams=format_streams,
         adaptiveFormats=adaptive_formats,
         captions=convert_captions(info.get("subtitles"), info.get("automatic_captions"), video_id, base_url, user_id),
+        storyboards=storyboards,
         extractor=extractor,
         originalUrl=original_url,
     )

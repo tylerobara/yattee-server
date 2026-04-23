@@ -10,6 +10,7 @@ from fastapi.responses import Response
 
 import avatar_cache
 import database
+import innertube
 import invidious_proxy
 from converters import (
     invidious_to_playlist_list_item,
@@ -84,33 +85,57 @@ async def get_channel(channel_id: str):
     """Get channel details (Invidious-compatible)."""
     s = get_settings()
 
-    # For YouTube channels, try Invidious proxy first if enabled (faster)
+    # For YouTube channels: InnerTube → Invidious → yt-dlp
     if _is_youtube_channel_id(channel_id):
+        # Try InnerTube first (banners, avatars, description, sub count)
+        try:
+            data = await innertube.get_channel_info(channel_id)
+            if data:
+                thumbnails = [
+                    Thumbnail(quality="default", url=t["url"], width=t.get("width"), height=t.get("height"))
+                    for t in data.get("authorThumbnails", [])
+                ]
+                banners = [
+                    Thumbnail(quality="default", url=b["url"], width=b.get("width"), height=b.get("height"))
+                    for b in data.get("authorBanners", [])
+                ]
+                return ChannelResponse(
+                    authorId=data.get("authorId", channel_id),
+                    author=data.get("author", ""),
+                    description=data.get("description"),
+                    subCount=data.get("subCount"),
+                    totalViews=None,
+                    authorThumbnails=thumbnails,
+                    authorBanners=banners,
+                    authorVerified=data.get("authorVerified", False),
+                )
+        except innertube.InnerTubeError as e:
+            logger.debug(f"[Channels] InnerTube channel info error for {channel_id}: {e}")
+
+        # Fall back to Invidious
         if s.invidious_proxy_channels and invidious_proxy.is_enabled():
             try:
                 data = await invidious_proxy.get_channel(channel_id)
                 if data:
                     invidious_base = invidious_proxy.get_base_url()
-                    thumbnails = []
-                    for thumb in data.get("authorThumbnails", []):
-                        thumbnails.append(
-                            Thumbnail(
-                                quality=thumb.get("quality", "default"),
-                                url=resolve_invidious_url(thumb.get("url", ""), invidious_base),
-                                width=thumb.get("width"),
-                                height=thumb.get("height"),
-                            )
+                    thumbnails = [
+                        Thumbnail(
+                            quality=thumb.get("quality", "default"),
+                            url=resolve_invidious_url(thumb.get("url", ""), invidious_base),
+                            width=thumb.get("width"),
+                            height=thumb.get("height"),
                         )
-                    banners = []
-                    for banner in data.get("authorBanners", []):
-                        banners.append(
-                            Thumbnail(
-                                quality=banner.get("quality", "default"),
-                                url=resolve_invidious_url(banner.get("url", ""), invidious_base),
-                                width=banner.get("width"),
-                                height=banner.get("height"),
-                            )
+                        for thumb in data.get("authorThumbnails", [])
+                    ]
+                    banners = [
+                        Thumbnail(
+                            quality=banner.get("quality", "default"),
+                            url=resolve_invidious_url(banner.get("url", ""), invidious_base),
+                            width=banner.get("width"),
+                            height=banner.get("height"),
                         )
+                        for banner in data.get("authorBanners", [])
+                    ]
                     return ChannelResponse(
                         authorId=data.get("authorId", channel_id),
                         author=data.get("author", ""),
@@ -122,7 +147,6 @@ async def get_channel(channel_id: str):
                         authorVerified=data.get("authorVerified", False),
                     )
             except invidious_proxy.InvidiousProxyError:
-                # Fall through to yt-dlp
                 pass
 
         # Fall back to yt-dlp for YouTube
@@ -192,8 +216,18 @@ async def get_channel_videos_endpoint(
     # For Invidious proxy, pass continuation token directly
     page = int(continuation) if continuation and continuation.isdigit() else 1
 
-    # For YouTube channels, try Invidious proxy first if enabled
+    # For YouTube channels, try InnerTube first, then Invidious, then yt-dlp
     if _is_youtube_channel_id(channel_id):
+        # Try InnerTube first
+        try:
+            data = await innertube.get_channel_videos(channel_id, continuation)
+            if data and data.get("videos"):
+                video_items = [invidious_to_video_list_item(v) for v in data["videos"]]
+                return ChannelVideosResponse(videos=video_items, continuation=data.get("continuation"))
+        except innertube.InnerTubeError as e:
+            logger.debug(f"[Channels] InnerTube channel videos error for {channel_id}: {e}")
+
+        # Fall back to Invidious
         if get_settings().invidious_proxy_channels and invidious_proxy.is_enabled():
             try:
                 data = await invidious_proxy.get_channel_videos(channel_id, continuation)
@@ -202,7 +236,6 @@ async def get_channel_videos_endpoint(
                     video_items = [invidious_to_video_list_item(v, invidious_base) for v in data["videos"]]
                     return ChannelVideosResponse(videos=video_items, continuation=data.get("continuation"))
             except invidious_proxy.InvidiousProxyError:
-                # Fall through to yt-dlp
                 pass
 
         # Fall back to yt-dlp for YouTube
@@ -342,7 +375,16 @@ async def get_channel_playlists_endpoint(
     channel_id: str, continuation: Optional[str] = Query(None, description="Continuation token for pagination")
 ):
     """Get channel playlists (Invidious-compatible)."""
-    # Try Invidious proxy first if enabled
+    # Try InnerTube first
+    try:
+        data = await innertube.get_channel_playlists(channel_id, continuation)
+        if data and data.get("playlists"):
+            playlist_items = [invidious_to_playlist_list_item(p) for p in data["playlists"]]
+            return ChannelPlaylistsResponse(playlists=playlist_items, continuation=data.get("continuation"))
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Channels] InnerTube channel playlists error for {channel_id}: {e}")
+
+    # Fall back to Invidious
     if get_settings().invidious_proxy_channel_tabs and invidious_proxy.is_enabled():
         try:
             data = await invidious_proxy.get_channel_playlists(channel_id, continuation)
@@ -351,7 +393,6 @@ async def get_channel_playlists_endpoint(
                 playlist_items = [invidious_to_playlist_list_item(p, invidious_base) for p in data["playlists"]]
                 return ChannelPlaylistsResponse(playlists=playlist_items, continuation=data.get("continuation"))
         except invidious_proxy.InvidiousProxyError:
-            # Fall through to yt-dlp
             pass
 
     # Fall back to yt-dlp
@@ -377,7 +418,16 @@ async def get_channel_shorts_endpoint(
     channel_id: str, continuation: Optional[str] = Query(None, description="Continuation token for pagination")
 ):
     """Get channel shorts (Invidious-compatible)."""
-    # Try Invidious proxy first if enabled
+    # Try InnerTube first
+    try:
+        data = await innertube.get_channel_shorts(channel_id, continuation)
+        if data and data.get("videos"):
+            video_items = [invidious_to_video_list_item(v) for v in data["videos"]]
+            return ChannelShortsResponse(videos=video_items, continuation=data.get("continuation"))
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Channels] InnerTube channel shorts error for {channel_id}: {e}")
+
+    # Fall back to Invidious
     if get_settings().invidious_proxy_channel_tabs and invidious_proxy.is_enabled():
         try:
             data = await invidious_proxy.get_channel_shorts(channel_id, continuation)
@@ -386,7 +436,6 @@ async def get_channel_shorts_endpoint(
                 video_items = [invidious_to_video_list_item(v, invidious_base) for v in data["videos"]]
                 return ChannelShortsResponse(videos=video_items, continuation=data.get("continuation"))
         except invidious_proxy.InvidiousProxyError:
-            # Fall through to yt-dlp
             pass
 
     # Fall back to yt-dlp
@@ -410,7 +459,16 @@ async def get_channel_streams_endpoint(
     channel_id: str, continuation: Optional[str] = Query(None, description="Continuation token for pagination")
 ):
     """Get channel past live streams (Invidious-compatible)."""
-    # Try Invidious proxy first if enabled
+    # Try InnerTube first
+    try:
+        data = await innertube.get_channel_streams(channel_id, continuation)
+        if data and data.get("videos"):
+            video_items = [invidious_to_video_list_item(v) for v in data["videos"]]
+            return ChannelStreamsResponse(videos=video_items, continuation=data.get("continuation"))
+    except innertube.InnerTubeError as e:
+        logger.debug(f"[Channels] InnerTube channel streams error for {channel_id}: {e}")
+
+    # Fall back to Invidious
     if get_settings().invidious_proxy_channel_tabs and invidious_proxy.is_enabled():
         try:
             data = await invidious_proxy.get_channel_streams(channel_id, continuation)
@@ -419,7 +477,6 @@ async def get_channel_streams_endpoint(
                 video_items = [invidious_to_video_list_item(v, invidious_base) for v in data["videos"]]
                 return ChannelStreamsResponse(videos=video_items, continuation=data.get("continuation"))
         except invidious_proxy.InvidiousProxyError:
-            # Fall through to yt-dlp
             pass
 
     # Fall back to yt-dlp
@@ -457,8 +514,20 @@ async def search_channel_endpoint(
     if not q or not q.strip():
         raise HTTPException(status_code=400, detail="Search query 'q' is required")
 
-    # For YouTube channels, try Invidious proxy first if enabled
+    # For YouTube channels, try InnerTube first, then Invidious, then yt-dlp
     if _is_youtube_channel_id(channel_id):
+        # Try InnerTube first
+        try:
+            data = await innertube.search_channel(channel_id, q, page)
+            if data and data.get("videos"):
+                video_items = [invidious_to_video_list_item(v) for v in data["videos"]]
+                return ChannelSearchResponse(
+                    videos=video_items, continuation=str(page + 1) if video_items else None
+                )
+        except innertube.InnerTubeError as e:
+            logger.debug(f"[Channels] InnerTube channel search error for {channel_id}: {e}")
+
+        # Fall back to Invidious
         if get_settings().invidious_proxy_channels and invidious_proxy.is_enabled():
             try:
                 data = await invidious_proxy.search_channel(channel_id, q, page)
@@ -469,7 +538,6 @@ async def search_channel_endpoint(
                         videos=video_items, continuation=str(page + 1) if video_items else None
                     )
             except invidious_proxy.InvidiousProxyError:
-                # Fall through to yt-dlp
                 pass
 
         # Fall back to yt-dlp for YouTube

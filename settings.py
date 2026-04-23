@@ -28,6 +28,9 @@ class Settings(BaseModel):
     default_search_results: int = Field(default=20, ge=5, le=50)
     max_search_results: int = Field(default=50, ge=10, le=100)
 
+    # InnerTube (direct YouTube API)
+    innertube_enabled: bool = True
+
     # Invidious
     invidious_enabled: bool = True
     invidious_instance: Optional[str] = None
@@ -43,7 +46,7 @@ class Settings(BaseModel):
     invidious_proxy_thumbnails: bool = True
 
     # Feed
-    feed_fetch_interval: int = Field(default=1800, ge=300, le=86400)
+    feed_fetch_interval: int = Field(default=21600, ge=300, le=86400)
     feed_channel_delay: int = Field(default=2, ge=1, le=30)
     feed_max_videos: int = Field(default=30, ge=10, le=100)
     feed_video_max_age: int = Field(default=30, ge=1, le=365)
