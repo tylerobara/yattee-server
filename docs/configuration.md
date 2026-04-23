@@ -16,6 +16,7 @@ Set these in your `.env` file or as system/Docker environment variables.
 | `HOST` | string | `0.0.0.0` | Server bind address |
 | `PORT` | integer | `8080` | Server port. Docker default is `8085`. |
 | `DATA_DIR` | string | `data` | Directory for database, encryption keys, and temp files |
+| `DATABASE_URL` | string | *(empty)* | Optional database connection URL. When set, overrides local SQLite file DB (`postgresql://...` or `sqlite:///...`). |
 | `DOWNLOAD_DIR` | string | *(empty)* | Directory for proxied video downloads. If empty, uses a default location. |
 | `CREDENTIALS_ENCRYPTION_KEY` | string | *(auto-generated)* | Fernet encryption key for site credentials. Auto-generated on first run if not set. Generate with: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` |
 | `CORS_ORIGINS` | string | *(empty)* | Comma-separated list of allowed origins (e.g., `https://app.example.com,https://admin.example.com`) |

@@ -10,6 +10,7 @@ Create Date: 2026-01-13
 
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -21,165 +22,183 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Create all initial tables."""
+    bind = op.get_bind()
+    dialect = bind.dialect.name
+
+    def has_table(table_name: str) -> bool:
+        return sa.inspect(bind).has_table(table_name)
+
+    def has_index(table_name: str, index_name: str) -> bool:
+        return any(ix.get("name") == index_name for ix in sa.inspect(bind).get_indexes(table_name))
+
     # Users table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            is_admin INTEGER DEFAULT 0,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
+    if not has_table("users"):
+        op.create_table(
+            "users",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("username", sa.Text(), nullable=False, unique=True),
+            sa.Column("password_hash", sa.Text(), nullable=False),
+            sa.Column("is_admin", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("created_at", sa.Text(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.Column("last_login", sa.TIMESTAMP(), nullable=True),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+    if has_table("users") and not has_index("users", "idx_users_username"):
+        op.create_index("idx_users_username", "users", ["username"])
 
     # Legacy admins table for backwards compatibility
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_login TIMESTAMP
+    if not has_table("admins"):
+        op.create_table(
+            "admins",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("username", sa.Text(), nullable=False, unique=True),
+            sa.Column("password_hash", sa.Text(), nullable=False),
+            sa.Column("created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.Column("last_login", sa.TIMESTAMP(), nullable=True),
         )
-    """)
 
     # Cached videos table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS cached_videos (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            channel_id TEXT NOT NULL,
-            site TEXT NOT NULL,
-            video_id TEXT NOT NULL,
-            title TEXT NOT NULL,
-            author TEXT NOT NULL,
-            author_id TEXT NOT NULL,
-            length_seconds INTEGER DEFAULT 0,
-            view_count INTEGER,
-            published INTEGER,
-            published_text TEXT,
-            thumbnail_url TEXT,
-            thumbnail_data TEXT,
-            video_url TEXT,
-            fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(channel_id, site, video_id)
+    if not has_table("cached_videos"):
+        op.create_table(
+            "cached_videos",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("channel_id", sa.Text(), nullable=False),
+            sa.Column("site", sa.Text(), nullable=False),
+            sa.Column("video_id", sa.Text(), nullable=False),
+            sa.Column("title", sa.Text(), nullable=False),
+            sa.Column("author", sa.Text(), nullable=False),
+            sa.Column("author_id", sa.Text(), nullable=False),
+            sa.Column("length_seconds", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("view_count", sa.Integer(), nullable=True),
+            sa.Column("published", sa.Integer(), nullable=True),
+            sa.Column("published_text", sa.Text(), nullable=True),
+            sa.Column("thumbnail_url", sa.Text(), nullable=True),
+            sa.Column("thumbnail_data", sa.Text(), nullable=True),
+            sa.Column("video_url", sa.Text(), nullable=True),
+            sa.Column("fetched_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.UniqueConstraint("channel_id", "site", "video_id", name="uq_cached_videos_channel_site_video"),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_cached_videos_channel ON cached_videos(channel_id, site)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_cached_videos_published ON cached_videos(published DESC)")
-    op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_cached_videos_channel_published "
-        "ON cached_videos(channel_id, site, published DESC)"
-    )
+    if has_table("cached_videos") and not has_index("cached_videos", "idx_cached_videos_channel"):
+        op.create_index("idx_cached_videos_channel", "cached_videos", ["channel_id", "site"])
+    if has_table("cached_videos") and not has_index("cached_videos", "idx_cached_videos_published"):
+        op.create_index("idx_cached_videos_published", "cached_videos", ["published"])
+    if has_table("cached_videos") and not has_index("cached_videos", "idx_cached_videos_channel_published"):
+        op.create_index("idx_cached_videos_channel_published", "cached_videos", ["channel_id", "site", "published"])
 
     # Feed fetch status table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS feed_fetch_status (
-            channel_id TEXT NOT NULL,
-            site TEXT NOT NULL,
-            last_fetch TIMESTAMP,
-            fetch_error TEXT,
-            max_videos_fetched INTEGER,
-            pagination_limited BOOLEAN DEFAULT 0,
-            pagination_limit_reason TEXT,
-            PRIMARY KEY (channel_id, site)
+    if not has_table("feed_fetch_status"):
+        op.create_table(
+            "feed_fetch_status",
+            sa.Column("channel_id", sa.Text(), nullable=False),
+            sa.Column("site", sa.Text(), nullable=False),
+            sa.Column("last_fetch", sa.TIMESTAMP(), nullable=True),
+            sa.Column("fetch_error", sa.Text(), nullable=True),
+            sa.Column("max_videos_fetched", sa.Integer(), nullable=True),
+            sa.Column("pagination_limited", sa.Boolean(), server_default=sa.text("false" if dialect == "postgresql" else "0")),
+            sa.Column("pagination_limit_reason", sa.Text(), nullable=True),
+            sa.PrimaryKeyConstraint("channel_id", "site", name="pk_feed_fetch_status"),
         )
-    """)
 
     # Watched channels table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS watched_channels (
-            channel_id TEXT NOT NULL,
-            site TEXT NOT NULL,
-            channel_name TEXT,
-            channel_url TEXT,
-            avatar_url TEXT,
-            last_requested TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            subscriber_count INTEGER,
-            is_verified BOOLEAN DEFAULT 0,
-            metadata_updated_at TIMESTAMP,
-            PRIMARY KEY (channel_id, site)
+    if not has_table("watched_channels"):
+        op.create_table(
+            "watched_channels",
+            sa.Column("channel_id", sa.Text(), nullable=False),
+            sa.Column("site", sa.Text(), nullable=False),
+            sa.Column("channel_name", sa.Text(), nullable=True),
+            sa.Column("channel_url", sa.Text(), nullable=True),
+            sa.Column("avatar_url", sa.Text(), nullable=True),
+            sa.Column("last_requested", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.Column("subscriber_count", sa.Integer(), nullable=True),
+            sa.Column("is_verified", sa.Boolean(), server_default=sa.text("false" if dialect == "postgresql" else "0")),
+            sa.Column("metadata_updated_at", sa.TIMESTAMP(), nullable=True),
+            sa.PrimaryKeyConstraint("channel_id", "site", name="pk_watched_channels"),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_watched_channels_last_requested ON watched_channels(last_requested)")
+    if has_table("watched_channels") and not has_index("watched_channels", "idx_watched_channels_last_requested"):
+        op.create_index("idx_watched_channels_last_requested", "watched_channels", ["last_requested"])
 
     # Sites table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS sites (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            extractor_pattern TEXT NOT NULL,
-            enabled BOOLEAN DEFAULT 1,
-            priority INTEGER DEFAULT 0,
-            proxy_streaming BOOLEAN DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    if not has_table("sites"):
+        op.create_table(
+            "sites",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("name", sa.Text(), nullable=False),
+            sa.Column("extractor_pattern", sa.Text(), nullable=False),
+            sa.Column("enabled", sa.Boolean(), server_default=sa.text("true" if dialect == "postgresql" else "1")),
+            sa.Column("priority", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("proxy_streaming", sa.Boolean(), server_default=sa.text("true" if dialect == "postgresql" else "1")),
+            sa.Column("created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.Column("updated_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_sites_enabled ON sites(enabled)")
-    op.execute("CREATE INDEX IF NOT EXISTS idx_sites_extractor ON sites(extractor_pattern)")
+    if has_table("sites") and not has_index("sites", "idx_sites_enabled"):
+        op.create_index("idx_sites_enabled", "sites", ["enabled"])
+    if has_table("sites") and not has_index("sites", "idx_sites_extractor"):
+        op.create_index("idx_sites_extractor", "sites", ["extractor_pattern"])
 
     # Insert default YouTube site if no sites exist
-    op.execute("""
-        INSERT OR IGNORE INTO sites (id, name, extractor_pattern, enabled, priority, proxy_streaming)
-        VALUES (1, 'YouTube', 'youtube', 1, 100, 0)
-    """)
+    op.execute(
+        """
+        INSERT INTO sites (id, name, extractor_pattern, enabled, priority, proxy_streaming)
+        VALUES (1, 'YouTube', 'youtube', TRUE, 100, FALSE)
+        ON CONFLICT (id) DO NOTHING
+        """
+    )
 
     # Credentials table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS credentials (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            site_id INTEGER NOT NULL,
-            credential_type TEXT NOT NULL,
-            key TEXT,
-            value TEXT NOT NULL,
-            is_encrypted BOOLEAN DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (site_id) REFERENCES sites(id) ON DELETE CASCADE
+    if not has_table("credentials"):
+        op.create_table(
+            "credentials",
+            sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+            sa.Column("site_id", sa.Integer(), nullable=False),
+            sa.Column("credential_type", sa.Text(), nullable=False),
+            sa.Column("key", sa.Text(), nullable=True),
+            sa.Column("value", sa.Text(), nullable=False),
+            sa.Column("is_encrypted", sa.Boolean(), server_default=sa.text("false" if dialect == "postgresql" else "0")),
+            sa.Column("created_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.ForeignKeyConstraint(["site_id"], ["sites.id"], ondelete="CASCADE"),
         )
-    """)
-    op.execute("CREATE INDEX IF NOT EXISTS idx_credentials_site_id ON credentials(site_id)")
+    if has_table("credentials") and not has_index("credentials", "idx_credentials_site_id"):
+        op.create_index("idx_credentials_site_id", "credentials", ["site_id"])
 
     # Settings table
-    op.execute("""
-        CREATE TABLE IF NOT EXISTS settings (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            jwt_expiry_hours INTEGER DEFAULT 24,
-            ytdlp_path TEXT DEFAULT 'yt-dlp',
-            ytdlp_timeout INTEGER DEFAULT 120,
-            cache_video_ttl INTEGER DEFAULT 3600,
-            cache_stream_ttl INTEGER DEFAULT 300,
-            cache_search_ttl INTEGER DEFAULT 900,
-            cache_channel_ttl INTEGER DEFAULT 1800,
-            cache_avatar_ttl INTEGER DEFAULT 86400,
-            cache_extract_ttl INTEGER DEFAULT 900,
-            default_search_results INTEGER DEFAULT 20,
-            max_search_results INTEGER DEFAULT 50,
-            invidious_instance TEXT DEFAULT NULL,
-            invidious_timeout INTEGER DEFAULT 10,
-            invidious_author_thumbnails INTEGER DEFAULT 0,
-            invidious_proxy_channels INTEGER DEFAULT 1,
-            invidious_proxy_channel_tabs INTEGER DEFAULT 1,
-            invidious_proxy_videos INTEGER DEFAULT 1,
-            invidious_proxy_playlists INTEGER DEFAULT 1,
-            invidious_proxy_captions INTEGER DEFAULT 1,
-            invidious_proxy_thumbnails INTEGER DEFAULT 1,
-            feed_fetch_interval INTEGER DEFAULT 21600,
-            feed_channel_delay INTEGER DEFAULT 2,
-            feed_max_videos INTEGER DEFAULT 30,
-            feed_video_max_age INTEGER DEFAULT 30,
-            feed_ytdlp_use_flat_playlist INTEGER DEFAULT 0,
-            feed_fallback_ytdlp_on_414 INTEGER DEFAULT 0,
-            basic_auth_enabled INTEGER DEFAULT 0,
-            allow_all_sites_for_extraction INTEGER DEFAULT 0,
-            rate_limit_window INTEGER DEFAULT 60,
-            rate_limit_max_failures INTEGER DEFAULT 5,
-            proxy_download_max_age INTEGER DEFAULT 300,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    if not has_table("settings"):
+        op.create_table(
+            "settings",
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("jwt_expiry_hours", sa.Integer(), server_default=sa.text("24")),
+            sa.Column("ytdlp_path", sa.Text(), server_default=sa.text("'yt-dlp'")),
+            sa.Column("ytdlp_timeout", sa.Integer(), server_default=sa.text("120")),
+            sa.Column("cache_video_ttl", sa.Integer(), server_default=sa.text("3600")),
+            sa.Column("cache_stream_ttl", sa.Integer(), server_default=sa.text("300")),
+            sa.Column("cache_search_ttl", sa.Integer(), server_default=sa.text("900")),
+            sa.Column("cache_channel_ttl", sa.Integer(), server_default=sa.text("1800")),
+            sa.Column("cache_avatar_ttl", sa.Integer(), server_default=sa.text("86400")),
+            sa.Column("cache_extract_ttl", sa.Integer(), server_default=sa.text("900")),
+            sa.Column("default_search_results", sa.Integer(), server_default=sa.text("20")),
+            sa.Column("max_search_results", sa.Integer(), server_default=sa.text("50")),
+            sa.Column("invidious_instance", sa.Text(), nullable=True),
+            sa.Column("invidious_timeout", sa.Integer(), server_default=sa.text("10")),
+            sa.Column("invidious_author_thumbnails", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("invidious_proxy_channels", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("invidious_proxy_channel_tabs", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("invidious_proxy_videos", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("invidious_proxy_playlists", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("invidious_proxy_captions", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("invidious_proxy_thumbnails", sa.Integer(), server_default=sa.text("1")),
+            sa.Column("feed_fetch_interval", sa.Integer(), server_default=sa.text("21600")),
+            sa.Column("feed_channel_delay", sa.Integer(), server_default=sa.text("2")),
+            sa.Column("feed_max_videos", sa.Integer(), server_default=sa.text("30")),
+            sa.Column("feed_video_max_age", sa.Integer(), server_default=sa.text("30")),
+            sa.Column("feed_ytdlp_use_flat_playlist", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("feed_fallback_ytdlp_on_414", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("basic_auth_enabled", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("allow_all_sites_for_extraction", sa.Integer(), server_default=sa.text("0")),
+            sa.Column("rate_limit_window", sa.Integer(), server_default=sa.text("60")),
+            sa.Column("rate_limit_max_failures", sa.Integer(), server_default=sa.text("5")),
+            sa.Column("proxy_download_max_age", sa.Integer(), server_default=sa.text("300")),
+            sa.Column("updated_at", sa.TIMESTAMP(), server_default=sa.text("CURRENT_TIMESTAMP")),
+            sa.CheckConstraint("id = 1", name="ck_settings_singleton"),
         )
-    """)
-    op.execute("INSERT OR IGNORE INTO settings (id) VALUES (1)")
+    op.execute("INSERT INTO settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
 
 
 def downgrade() -> None:

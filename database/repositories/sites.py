@@ -14,11 +14,12 @@ def create_site(
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO sites (name, extractor_pattern, enabled, priority, proxy_streaming)
-               VALUES (?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?) RETURNING id""",
             (name, extractor_pattern, enabled, priority, proxy_streaming),
         )
         conn.commit()
-        return cursor.lastrowid
+        row = cursor.fetchone()
+        return int(row["id"] if isinstance(row, dict) else row[0])
 
 
 def get_site(site_id: int) -> Optional[Dict[str, Any]]:
@@ -61,7 +62,7 @@ def get_enabled_sites() -> List[Dict[str, Any]]:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT * FROM sites WHERE enabled = 1 ORDER BY priority DESC
+            SELECT * FROM sites WHERE enabled = TRUE ORDER BY priority DESC
         """)
         sites = []
         for site_row in cursor.fetchall():
@@ -128,7 +129,7 @@ def get_site_by_extractor(extractor: str) -> Optional[Dict[str, Any]]:
     """Get a site by matching extractor pattern."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM sites WHERE enabled = 1 ORDER BY priority DESC")
+        cursor.execute("SELECT * FROM sites WHERE enabled = TRUE ORDER BY priority DESC")
         for row in cursor.fetchall():
             site = dict(row)
             import re
@@ -144,11 +145,12 @@ def add_credential(site_id: int, credential_type: str, value: str, key: str = No
         cursor = conn.cursor()
         cursor.execute(
             """INSERT INTO credentials (site_id, credential_type, key, value, is_encrypted)
-               VALUES (?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?) RETURNING id""",
             (site_id, credential_type, key, value, is_encrypted),
         )
         conn.commit()
-        return cursor.lastrowid
+        row = cursor.fetchone()
+        return int(row["id"] if isinstance(row, dict) else row[0])
 
 
 def get_credential(credential_id: int) -> Optional[Dict[str, Any]]:

@@ -13,6 +13,12 @@ PORT = int(os.getenv("PORT", "8080"))
 # Data directory (for database, temp files, etc.)
 DATA_DIR = os.getenv("DATA_DIR", "data")
 
+# Database URL (optional). If set, this takes precedence over SQLite file DB.
+# Examples:
+#   postgresql://user:pass@localhost:5432/yattee
+#   sqlite:///data/yattee.db
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
 # Download directory (for proxied video downloads)
 DOWNLOAD_DIR = os.getenv("DOWNLOAD_DIR", "")
 

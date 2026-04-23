@@ -10,8 +10,9 @@ def has_any_user() -> bool:
     """Check if any user account exists (for setup flow)."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users")
-        return cursor.fetchone()[0] > 0
+        cursor.execute("SELECT COUNT(*) AS count FROM users")
+        row = cursor.fetchone()
+        return (row["count"] if row else 0) > 0
 
 
 # Backwards compatibility alias
@@ -25,11 +26,12 @@ def create_user(username: str, password_hash: str, is_admin: bool = False) -> in
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?)",
-            (username, password_hash, is_admin),
+            "INSERT INTO users (username, password_hash, is_admin) VALUES (?, ?, ?) RETURNING id",
+            (username, password_hash, 1 if is_admin else 0),
         )
         conn.commit()
-        return cursor.lastrowid
+        row = cursor.fetchone()
+        return int(row["id"] if isinstance(row, dict) else row[0])
 
 
 # Backwards compatibility alias
@@ -121,7 +123,7 @@ def update_user(user_id: int, is_admin: bool = None) -> bool:
 
     if is_admin is not None:
         updates.append("is_admin = ?")
-        params.append(is_admin)
+        params.append(1 if is_admin else 0)
 
     if not updates:
         return False
@@ -154,16 +156,18 @@ def count_users() -> int:
     """Get the total number of users."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users")
-        return cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) AS count FROM users")
+        row = cursor.fetchone()
+        return int(row["count"] if row else 0)
 
 
 def count_admin_users() -> int:
     """Get the total number of admin users."""
     with get_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM users WHERE is_admin = 1")
-        return cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) AS count FROM users WHERE is_admin = 1")
+        row = cursor.fetchone()
+        return int(row["count"] if row else 0)
 
 
 # Backwards compatibility alias

@@ -42,7 +42,7 @@ def is_basic_auth_enabled() -> bool:
         cursor = conn.cursor()
         cursor.execute("SELECT basic_auth_enabled FROM settings WHERE id = 1")
         row = cursor.fetchone()
-        return bool(row[0]) if row else False
+        return bool(row.get("basic_auth_enabled")) if row else False
 
 
 def set_basic_auth_enabled(enabled: bool) -> None:

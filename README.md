@@ -99,6 +99,16 @@ Authentication is configured during setup and can be managed in the admin panel 
 
 ```yaml
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: yattee-postgres
+    environment:
+      POSTGRES_DB: yattee
+      POSTGRES_USER: yattee
+      POSTGRES_PASSWORD: yattee
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
   yattee-server:
     build: .
     container_name: yattee-server
@@ -109,6 +119,11 @@ services:
       - data:/app/data
     env_file:
       - .env
+    environment:
+      DATABASE_URL: postgresql://yattee:yattee@postgres:5432/yattee
+    depends_on:
+      postgres:
+        condition: service_healthy
     # Optional: auto-provisioning for automated deployments
     # environment:
     #   - ADMIN_USERNAME=admin
@@ -119,6 +134,7 @@ services:
 volumes:
   downloads:
   data:
+  postgres-data:
 ```
 
 ### Volumes

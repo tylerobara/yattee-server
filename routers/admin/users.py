@@ -1,5 +1,7 @@
 """Admin and user management endpoints."""
 
+from datetime import date, datetime
+
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -12,6 +14,17 @@ from settings import get_settings
 from .deps import get_current_admin
 
 router = APIRouter()
+
+
+def _serialize_timestamp(value: object) -> Optional[str]:
+    """Convert DB timestamp values to API response strings."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
 
 
 # =============================================================================
@@ -63,7 +76,12 @@ async def list_admins(admin: dict = Depends(get_current_admin)):
     """List all admin users."""
     admins = database.get_all_admins()
     return [
-        AdminResponse(id=a["id"], username=a["username"], created_at=a["created_at"] or "", last_login=a["last_login"])
+        AdminResponse(
+            id=a["id"],
+            username=a["username"],
+            created_at=_serialize_timestamp(a["created_at"]) or "",
+            last_login=_serialize_timestamp(a["last_login"]),
+        )
         for a in admins
     ]
 
@@ -83,8 +101,8 @@ async def create_admin(data: AdminCreate, admin: dict = Depends(get_current_admi
     return AdminResponse(
         id=new_admin["id"],
         username=new_admin["username"],
-        created_at=new_admin["created_at"] or "",
-        last_login=new_admin["last_login"],
+        created_at=_serialize_timestamp(new_admin["created_at"]) or "",
+        last_login=_serialize_timestamp(new_admin["last_login"]),
     )
 
 
@@ -155,8 +173,8 @@ async def list_users(admin: dict = Depends(get_current_admin)):
             id=u["id"],
             username=u["username"],
             is_admin=bool(u["is_admin"]),
-            created_at=u["created_at"] or "",
-            last_login=u["last_login"],
+            created_at=_serialize_timestamp(u["created_at"]) or "",
+            last_login=_serialize_timestamp(u["last_login"]),
         )
         for u in users
     ]
@@ -178,8 +196,8 @@ async def create_user(data: UserCreate, admin: dict = Depends(get_current_admin)
         id=new_user["id"],
         username=new_user["username"],
         is_admin=bool(new_user["is_admin"]),
-        created_at=new_user["created_at"] or "",
-        last_login=new_user["last_login"],
+        created_at=_serialize_timestamp(new_user["created_at"]) or "",
+        last_login=_serialize_timestamp(new_user["last_login"]),
     )
 
 
@@ -194,8 +212,8 @@ async def get_user(user_id: int, admin: dict = Depends(get_current_admin)):
         id=user["id"],
         username=user["username"],
         is_admin=bool(user["is_admin"]),
-        created_at=user["created_at"] or "",
-        last_login=user["last_login"],
+        created_at=_serialize_timestamp(user["created_at"]) or "",
+        last_login=_serialize_timestamp(user["last_login"]),
     )
 
 
@@ -223,8 +241,8 @@ async def update_user(user_id: int, data: UserUpdate, admin: dict = Depends(get_
         id=updated_user["id"],
         username=updated_user["username"],
         is_admin=bool(updated_user["is_admin"]),
-        created_at=updated_user["created_at"] or "",
-        last_login=updated_user["last_login"],
+        created_at=_serialize_timestamp(updated_user["created_at"]) or "",
+        last_login=_serialize_timestamp(updated_user["last_login"]),
     )
 
 
