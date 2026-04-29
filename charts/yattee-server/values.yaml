@@ -177,3 +177,5 @@ persistence:
     - ReadWriteOnce
     size: 2Gi
     storageClass: ""
+
+envFromSecret: []
