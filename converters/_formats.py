@@ -115,6 +115,8 @@ def convert_formats(
     formats: Optional[List[dict]],
     video_id: str = "",
     proxy_base_url: str = "",
+    proxy_mode: str = "download",
+    base_url: str = "",
     original_url: str = "",
     user_id: Optional[int] = None,
 ) -> tuple[List[FormatStream], List[AdaptiveFormat]]:
@@ -125,6 +127,11 @@ def convert_formats(
         video_id: Video ID for generating proxy URLs
         proxy_base_url: Base URL for proxy (e.g., "http://server:8085/proxy").
                        If empty, uses direct YouTube URLs.
+        proxy_mode: ``"relay"`` → mint signed ``/proxy/relay`` URLs (right shape
+            for playback). ``"download"`` → legacy ``/proxy/fast/`` URLs (right
+            shape for downloads, since the file gets cached on disk). ``"off"``
+            → direct upstream URL (caller must pass `proxy_base_url=""`).
+        base_url: Server base URL (no path), needed for ``relay`` mode.
         original_url: Original URL for external sites (used for re-extraction in proxy)
         user_id: User ID for generating streaming tokens (if basic auth enabled)
     """
@@ -231,17 +238,20 @@ def convert_formats(
         # may contain admin-stored credentials that should not be exposed.
         # Proxy endpoints handle authentication separately.
 
-        # Use proxy URL if base URL provided, otherwise direct URL
-        # Use /fast/ endpoint for yt-dlp parallel downloads (much faster)
-        if proxy_base_url and video_id:
+        # Pick the URL the client will actually hit:
+        # - relay: stream via /proxy/relay (no disk write, Range works)
+        # - download: legacy /proxy/fast/ (re-extracts via yt-dlp, caches on disk)
+        # - off / no proxy_base_url: direct upstream URL
+        if proxy_mode == "relay" and proxy_base_url and base_url:
+            from routers.proxy import signed_relay_url
+
+            url = signed_relay_url(base_url, direct_url)
+        elif proxy_mode == "download" and proxy_base_url and video_id:
             if original_url:
-                # External site - include original URL for re-extraction
                 encoded_url = urllib.parse.quote(original_url, safe="")
                 url = f"{proxy_base_url}/fast/{video_id}?itag={itag}&url={encoded_url}"
             else:
-                # YouTube - just use video_id
                 url = f"{proxy_base_url}/fast/{video_id}?itag={itag}"
-            # Add streaming token if basic auth is enabled
             if stream_token:
                 url = f"{url}&token={stream_token}"
         else:

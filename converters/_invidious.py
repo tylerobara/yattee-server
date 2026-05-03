@@ -32,6 +32,7 @@ def invidious_to_video_response(
     info: dict,
     base_url: str = "",
     proxy_streams: bool = False,
+    proxy_mode: str = "download",
     invidious_base_url: str = "",
     user_id: Optional[int] = None,
 ) -> VideoResponse:
@@ -42,7 +43,10 @@ def invidious_to_video_response(
     Args:
         info: Invidious video info dict
         base_url: Base URL for proxy URLs (yattee-server URL)
-        proxy_streams: If True, stream URLs will point to /proxy/fast/{video_id}?itag=X
+        proxy_streams: If True, stream URLs are proxied through this server.
+        proxy_mode: ``"relay"`` (default for playback) → /proxy/relay byte-relay.
+            ``"download"`` → /proxy/fast/ on-disk cache (downloads). ``"off"``
+            is equivalent to ``proxy_streams=False``. Ignored when proxying off.
         invidious_base_url: The Invidious instance URL for resolving relative paths
         user_id: User ID for generating streaming tokens (if basic auth enabled)
     """
@@ -51,6 +55,31 @@ def invidious_to_video_response(
     # Get Invidious base URL from settings if not provided
     if not invidious_base_url:
         invidious_base_url = (s.invidious_instance or "").rstrip("/")
+
+    effective_proxy_mode = proxy_mode if proxy_streams else "off"
+
+    def _proxy_url(invidious_url: str, itag: str, content_type: Optional[str] = None) -> str:
+        """Pick the URL the client will hit for one Invidious-extracted stream.
+
+        - relay: resolve to absolute URL, then sign it for /proxy/relay
+        - download: legacy /proxy/fast/{video_id}?itag=… (re-extracts via yt-dlp)
+        - off: passthrough, with /videoplayback resolved against the Invidious base
+        """
+        if effective_proxy_mode == "relay" and base_url and invidious_url:
+            from routers.proxy import signed_relay_url
+
+            absolute = resolve_invidious_url(invidious_url, invidious_base_url)
+            return signed_relay_url(base_url, absolute, content_type=content_type)
+        if effective_proxy_mode == "download" and base_url and itag:
+            url = f"{base_url}/proxy/fast/{video_id}?itag={itag}"
+            if stream_token:
+                url = f"{url}&token={stream_token}"
+            return url
+        # Off / passthrough — keep existing behavior (Invidious local URLs go
+        # through /companion).
+        if invidious_url.startswith("/videoplayback"):
+            invidious_url = "/companion" + invidious_url
+        return resolve_invidious_url(invidious_url, invidious_base_url)
 
     video_id = info.get("videoId", "")
 
@@ -96,19 +125,9 @@ def invidious_to_video_response(
     # Convert format streams
     format_streams = []
     for fmt in info.get("formatStreams", []):
-        url = fmt.get("url", "")
-        itag = fmt.get("itag", "")
-        # Use proxy URL if enabled
-        if proxy_streams and base_url and itag:
-            url = f"{base_url}/proxy/fast/{video_id}?itag={itag}"
-            if stream_token:
-                url = f"{url}&token={stream_token}"
-        else:
-            # Invidious with local=true returns relative URLs (/videoplayback?...)
-            # that must be routed through the companion proxy endpoint.
-            if url.startswith("/videoplayback"):
-                url = "/companion" + url
-            url = resolve_invidious_url(url, invidious_base_url)
+        original_url = fmt.get("url", "")
+        itag = str(fmt.get("itag", ""))
+        url = _proxy_url(original_url, itag, content_type=fmt.get("type"))
         format_streams.append(
             FormatStream(
                 url=url,
@@ -129,17 +148,9 @@ def invidious_to_video_response(
     # Convert adaptive formats
     adaptive_formats = []
     for fmt in info.get("adaptiveFormats", []):
-        url = fmt.get("url", "")
-        itag = fmt.get("itag", "")
-        # Use proxy URL if enabled
-        if proxy_streams and base_url and itag:
-            url = f"{base_url}/proxy/fast/{video_id}?itag={itag}"
-            if stream_token:
-                url = f"{url}&token={stream_token}"
-        else:
-            if url.startswith("/videoplayback"):
-                url = "/companion" + url
-            url = resolve_invidious_url(url, invidious_base_url)
+        original_url = fmt.get("url", "")
+        itag = str(fmt.get("itag", ""))
+        url = _proxy_url(original_url, itag, content_type=fmt.get("type"))
 
         audio_track = None
         if fmt.get("audioTrack"):
@@ -229,11 +240,33 @@ def invidious_to_video_response(
 
     hls_url = info.get("hlsUrl")
     if hls_url:
-        hls_url = resolve_invidious_url(hls_url, invidious_base_url)
+        if effective_proxy_mode == "relay" and base_url:
+            from routers.proxy import signed_relay_url
+
+            hls_url = signed_relay_url(
+                base_url,
+                resolve_invidious_url(hls_url, invidious_base_url),
+                content_type="application/vnd.apple.mpegurl",
+            )
+        else:
+            hls_url = resolve_invidious_url(hls_url, invidious_base_url)
 
     dash_url = info.get("dashUrl")
     if dash_url:
-        dash_url = resolve_invidious_url(dash_url, invidious_base_url)
+        # DASH manifests aren't body-rewritten yet (see _relay.py); keep
+        # passthrough behavior so the iOS client still gets a usable URL.
+        # When proxy_mode=relay is on we still wrap so the manifest fetch at
+        # least goes via the server (segment IPs may still mismatch).
+        if effective_proxy_mode == "relay" and base_url:
+            from routers.proxy import signed_relay_url
+
+            dash_url = signed_relay_url(
+                base_url,
+                resolve_invidious_url(dash_url, invidious_base_url),
+                content_type="application/dash+xml",
+            )
+        else:
+            dash_url = resolve_invidious_url(dash_url, invidious_base_url)
 
     # Convert recommended videos if present
     recommended_videos = None
