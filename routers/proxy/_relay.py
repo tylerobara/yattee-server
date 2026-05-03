@@ -178,7 +178,15 @@ async def relay(
     if not is_safe_url(url):
         raise HTTPException(status_code=403, detail="URL targets restricted network resources")
 
-    upstream_headers = {"User-Agent": UPSTREAM_USER_AGENT}
+    upstream_headers = {
+        "User-Agent": UPSTREAM_USER_AGENT,
+        # Don't let httpx negotiate gzip/br upstream — we relay raw bytes and
+        # would have to either pass Content-Encoding through or decompress.
+        # For media this is overwhelmingly the right call: video bytes are
+        # not re-compressible anyway, and avoiding it sidesteps a class of
+        # passthrough bugs.
+        "Accept-Encoding": "identity",
+    }
     for h in _FORWARDED_REQUEST_HEADERS:
         v = request.headers.get(h)
         if v is not None:

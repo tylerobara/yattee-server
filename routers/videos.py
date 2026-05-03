@@ -71,7 +71,7 @@ async def get_video(
             "'off': bypass proxying entirely. "
             "Ignored when the per-site proxy_streaming flag (or ?proxy=) is off."
         ),
-        regex="^(relay|download|off)$",
+        pattern="^(relay|download|off)$",
     ),
     invidious: Optional[bool] = Query(
         None,
