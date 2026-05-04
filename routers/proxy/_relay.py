@@ -49,6 +49,29 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
 
+# Upstream chunk size for the binary stream-and-relay loop. googlevideo has
+# been observed to throttle / reset long-running single connections; reissuing
+# the upstream GET every CHUNK_SIZE bytes avoids that. Matches Invidious's
+# /videoplayback chunk size (10 MiB) — it's been battle-tested at that value.
+CHUNK_SIZE = 10 * 1024 * 1024
+
+# How many times we retry a single chunk before giving up. The retry uses the
+# byte offset we've already yielded to the client, so partial progress isn't
+# lost — we just resume the upstream Range from where we stopped.
+MAX_RETRIES_PER_CHUNK = 3
+
+# Errors that justify a chunk retry. These are typically a TCP RST mid-read
+# (googlevideo recycling connections) or a ProtocolError from h2/keep-alive.
+# Connect-time errors are also retryable since the new chunk opens a fresh
+# connection. We don't retry HTTPStatusError (4xx/5xx) — that's authoritative.
+RETRYABLE_UPSTREAM_ERRORS = (
+    httpx.RemoteProtocolError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.ConnectError,
+    httpx.ReadTimeout,
+)
+
 HLS_CONTENT_TYPES = ("application/vnd.apple.mpegurl", "application/x-mpegurl")
 DASH_CONTENT_TYPES = ("application/dash+xml",)
 
@@ -155,6 +178,149 @@ def _rewrite_hls(body: str, base_url: str, manifest_url: str, ttl_seconds: int) 
 # manifests use absolute googlevideo URLs whose `ip=` may still be bound,
 # so this is a known limitation. Logged below so we notice it.
 
+# --- Range / chunked upstream helpers --------------------------------------
+
+_RANGE_RE = re.compile(r"^bytes=(\d+)-(\d*)$")
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$")
+
+
+def _parse_client_range(header: Optional[str]) -> tuple[int, Optional[int]]:
+    """Parse a single-range ``Range: bytes=start-end`` (end may be empty).
+
+    Returns ``(start, end_or_None)``. Anything we can't parse falls back to
+    ``(0, None)`` — i.e. "stream from the beginning, end at content end".
+    Multi-range and suffix-range forms aren't supported (MPV doesn't use
+    them; Range parsing for them is more bookkeeping than it's worth).
+    """
+    if not header:
+        return 0, None
+    m = _RANGE_RE.match(header.strip())
+    if not m:
+        return 0, None
+    start = int(m.group(1))
+    end = int(m.group(2)) if m.group(2) else None
+    return start, end
+
+
+def _parse_content_range_total(header: Optional[str]) -> Optional[int]:
+    """Pull the ``/TOTAL`` from ``Content-Range: bytes X-Y/TOTAL``.
+
+    Returns ``None`` if the header is missing or upstream sent ``*`` for the
+    total (indicating it doesn't know the full size — happens for chunked
+    responses).
+    """
+    if not header:
+        return None
+    m = _CONTENT_RANGE_RE.match(header.strip())
+    if not m or m.group(3) == "*":
+        return None
+    return int(m.group(3))
+
+
+async def _stream_chunked_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    base_headers: dict,
+    start: int,
+    end_inclusive: Optional[int],
+):
+    """Stream bytes ``start..end_inclusive`` (HTTP-style inclusive end) from
+    upstream, breaking the read into ``CHUNK_SIZE``-sized upstream GETs.
+
+    Per chunk, retry up to ``MAX_RETRIES_PER_CHUNK`` times on transient
+    connection errors. The retry resumes from the byte offset already
+    yielded, so the client sees a contiguous stream regardless of upstream
+    flakiness — bytes already delivered are never delivered twice.
+
+    If ``end_inclusive`` is ``None`` we keep going until upstream returns
+    fewer bytes than requested (signalling end-of-content) or returns a
+    non-success status.
+    """
+    cursor = start
+
+    while end_inclusive is None or cursor <= end_inclusive:
+        chunk_end = cursor + CHUNK_SIZE - 1
+        if end_inclusive is not None:
+            chunk_end = min(chunk_end, end_inclusive)
+
+        chunk_yielded = 0
+        last_error: Optional[BaseException] = None
+
+        for attempt in range(MAX_RETRIES_PER_CHUNK):
+            attempt_start = cursor + chunk_yielded
+            req_headers = {**base_headers, "Range": f"bytes={attempt_start}-{chunk_end}"}
+
+            try:
+                resp = await client.send(
+                    client.build_request("GET", url, headers=req_headers),
+                    stream=True,
+                )
+            except RETRYABLE_UPSTREAM_ERRORS as e:
+                last_error = e
+                logger.warning(
+                    f"[Relay] connect retry {attempt + 1}/{MAX_RETRIES_PER_CHUNK} "
+                    f"for bytes={attempt_start}-{chunk_end}: {e}"
+                )
+                continue
+
+            # 416 Range Not Satisfiable when end_inclusive was unknown means
+            # we walked past content end — clean exit.
+            if resp.status_code == 416 and end_inclusive is None:
+                await resp.aclose()
+                return
+
+            if resp.status_code >= 400:
+                # Authoritative error from upstream, surface to client.
+                body = await resp.aread()
+                await resp.aclose()
+                raise httpx.HTTPStatusError(
+                    f"upstream {resp.status_code} for bytes={attempt_start}-{chunk_end}: {body[:200]!r}",
+                    request=resp.request,
+                    response=resp,
+                )
+
+            # If we asked for a Range and upstream answered 200, it doesn't
+            # honour Range — we'd be re-downloading the whole body from byte 0
+            # for every chunk. Bail to single-shot mode by streaming this one
+            # body fully and stopping. (googlevideo always 206s; this only
+            # matters as a safety net for misconfigured upstreams.)
+            single_shot = resp.status_code == 200
+            try:
+                async for piece in resp.aiter_raw():
+                    chunk_yielded += len(piece)
+                    yield piece
+                await resp.aclose()
+                break
+            except RETRYABLE_UPSTREAM_ERRORS as e:
+                last_error = e
+                logger.warning(
+                    f"[Relay] read retry {attempt + 1}/{MAX_RETRIES_PER_CHUNK} "
+                    f"after {chunk_yielded}B of bytes={cursor}-{chunk_end}: {e}"
+                )
+                await resp.aclose()
+                continue
+        else:
+            # Exhausted retries.
+            raise last_error if last_error else RuntimeError("relay chunk failed")
+
+        # Defensive: if upstream returned no body, don't loop forever.
+        if chunk_yielded == 0:
+            return
+
+        chunk_request_size = chunk_end - cursor + 1
+        cursor += chunk_yielded
+
+        # Single-shot mode (upstream ignored Range) — we just streamed the
+        # whole body, anything more would be duplicates.
+        if single_shot:
+            return
+
+        # If we asked for N bytes and got fewer, upstream is signalling EOF —
+        # stop even if end_inclusive was beyond the real content end.
+        if chunk_yielded < chunk_request_size:
+            return
+
+
 # --- Endpoint ---------------------------------------------------------------
 
 
@@ -187,73 +353,138 @@ async def relay(
         # passthrough bugs.
         "Accept-Encoding": "identity",
     }
+    # Forward client conditionals; the client's Range is parsed/applied
+    # below per-chunk, so don't pass it raw to the meta probe.
     for h in _FORWARDED_REQUEST_HEADERS:
+        if h == "range":
+            continue
         v = request.headers.get(h)
         if v is not None:
             upstream_headers[h] = v
+
+    client_range = request.headers.get("range")
+    range_start, range_end = _parse_client_range(client_range)
 
     client = httpx.AsyncClient(
         timeout=httpx.Timeout(connect=10.0, read=None, write=30.0, pool=10.0),
         follow_redirects=True,
     )
 
+    # --- Meta probe: tiny first request to discover total/status/type ----
+    # We use Range: bytes=0-0 to get just the first byte (1 B body) so we
+    # can read Content-Range/total without downloading anything significant.
+    # The actual payload is fetched fresh via _stream_chunked_with_retry
+    # below; this connection is closed before streaming starts.
+    meta_headers = {**upstream_headers, "Range": "bytes=0-0"}
     try:
-        upstream_req = client.build_request("GET", url, headers=upstream_headers)
-        upstream = await client.send(upstream_req, stream=True)
+        meta_req = client.build_request("GET", url, headers=meta_headers)
+        meta = await client.send(meta_req, stream=True)
     except httpx.RequestError as e:
         await client.aclose()
         logger.warning(f"[Relay] Upstream connect failed for {url[:120]}: {e}")
         raise HTTPException(status_code=502, detail=f"Upstream connect failed: {e}") from e
 
-    response_content_type = (ct or upstream.headers.get("content-type") or "").split(";")[0].strip().lower()
+    upstream_content_type = meta.headers.get("content-type", "")
+    response_content_type = (ct or upstream_content_type or "").split(";")[0].strip().lower()
     is_hls = response_content_type in HLS_CONTENT_TYPES or url.split("?", 1)[0].endswith(".m3u8")
     is_dash = response_content_type in DASH_CONTENT_TYPES or url.split("?", 1)[0].endswith(".mpd")
 
     # --- Manifest path: buffer + rewrite + return one-shot --------------
-    if is_hls and upstream.status_code == 200:
+    # HLS manifests are tiny — just refetch in full (the meta probe only got
+    # 1 byte), then rewrite segment URLs. Don't chunk; don't retry; don't
+    # try to be clever.
+    if is_hls and meta.status_code in (200, 206):
+        await meta.aclose()
         try:
-            body = await upstream.aread()
-            text = body.decode("utf-8", errors="replace")
-            base_url = f"{request.url.scheme}://{request.url.netloc}"
-            rewritten = _rewrite_hls(text, base_url=base_url, manifest_url=url, ttl_seconds=DEFAULT_TTL_SECONDS)
+            full = await client.get(url, headers={**upstream_headers})
+            text = full.text
+            base_url_self = f"{request.url.scheme}://{request.url.netloc}"
+            rewritten = _rewrite_hls(text, base_url=base_url_self, manifest_url=url, ttl_seconds=DEFAULT_TTL_SECONDS)
             headers = {"content-type": "application/vnd.apple.mpegurl"}
             for h in ("cache-control", "etag", "last-modified"):
-                v = upstream.headers.get(h)
+                v = full.headers.get(h)
                 if v:
                     headers[h] = v
             return StreamingResponse(
                 iter([rewritten.encode("utf-8")]),
-                status_code=upstream.status_code,
+                status_code=full.status_code,
                 headers=headers,
             )
         finally:
-            await upstream.aclose()
             await client.aclose()
 
     if is_dash:
         # Known limitation — pass through with a warning. See note above.
         logger.info(f"[Relay] DASH manifest passthrough (segments not rewritten): {url[:120]}")
 
-    # --- Binary path: stream-and-relay ----------------------------------
-    headers = {}
-    for h in _PASSTHROUGH_RESPONSE_HEADERS:
-        v = upstream.headers.get(h)
+    # --- Binary path: chunked stream-and-relay ---------------------------
+    total = _parse_content_range_total(meta.headers.get("content-range"))
+    if total is None:
+        # Fallback: maybe upstream sent Content-Length on a 200 (no Range
+        # support). Use that.
+        cl = meta.headers.get("content-length")
+        if cl and meta.status_code == 200:
+            try:
+                total = int(cl)
+            except ValueError:
+                pass
+
+    # Decide what to send back to the client. If it asked for a Range and
+    # we know the total, return 206 + Content-Range; otherwise 200 + length.
+    if client_range and total is not None:
+        loop_end = range_end if range_end is not None else (total - 1)
+        # Clamp range_end to content end if client asked for more than exists.
+        loop_end = min(loop_end, total - 1)
+        response_status = 206
+        response_headers = {
+            "content-range": f"bytes {range_start}-{loop_end}/{total}",
+            "content-length": str(loop_end - range_start + 1),
+            "accept-ranges": "bytes",
+        }
+    elif total is not None:
+        loop_end = total - 1
+        response_status = 200
+        response_headers = {
+            "content-length": str(total),
+            "accept-ranges": "bytes",
+        }
+    else:
+        # Total unknown (chunked upstream, or the meta probe failed to give
+        # us one). Stream open-ended; let _stream_chunked_with_retry stop
+        # when upstream signals EOF via 416 / short read.
+        loop_end = range_end
+        response_status = 206 if client_range else (meta.status_code or 200)
+        response_headers = {"accept-ranges": "bytes"}
+
+    # Copy over a few content-classification headers from upstream.
+    for h in ("content-type", "etag", "last-modified", "cache-control", "expires"):
+        v = meta.headers.get(h)
         if v:
-            headers[h] = v
+            response_headers[h] = v
     if ct:
-        headers["content-type"] = ct
-    headers.setdefault("accept-ranges", "bytes")
+        response_headers["content-type"] = ct
+
+    await meta.aclose()
 
     async def body_iter():
         try:
-            async for chunk in upstream.aiter_raw():
-                yield chunk
+            async for piece in _stream_chunked_with_retry(
+                client=client,
+                url=url,
+                base_headers=upstream_headers,
+                start=range_start,
+                end_inclusive=loop_end,
+            ):
+                yield piece
+        except httpx.HTTPStatusError as e:
+            logger.warning(f"[Relay] upstream error mid-stream: {e}")
+        except RETRYABLE_UPSTREAM_ERRORS as e:
+            logger.warning(f"[Relay] gave up mid-stream after retries: {e}")
         finally:
-            await upstream.aclose()
             await client.aclose()
 
     return StreamingResponse(
         body_iter(),
-        status_code=upstream.status_code,
-        headers=headers,
+        status_code=response_status,
+        headers=response_headers,
     )
