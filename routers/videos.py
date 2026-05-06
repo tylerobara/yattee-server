@@ -111,11 +111,51 @@ async def get_video(
 
     invidious_usable = invidious_proxy.is_enabled() and s.invidious_proxy_videos
 
+    def _looks_like_live(data: dict) -> bool:
+        """Detect a live broadcast from the extracted Invidious response.
+
+        Invidious's own ``liveNow`` flag has been observed to be wrong for
+        streams that just went live, so the URL params are treated as
+        authoritative — `source=yt_live_broadcast` / `&live=1` / `?live=1`
+        baked into any extracted format URL means it's a live broadcast.
+        """
+        if data.get("liveNow") or data.get("isUpcoming"):
+            return True
+
+        def _live_url(u):
+            return bool(u) and (
+                "source=yt_live_broadcast" in u
+                or "&live=1" in u
+                or "?live=1" in u
+            )
+
+        for f in (data.get("adaptiveFormats") or []):
+            if _live_url(f.get("url") or ""):
+                return True
+        for f in (data.get("formatStreams") or []):
+            if _live_url(f.get("url") or ""):
+                return True
+        return False
+
     async def _via_invidious() -> VideoResponse:
         data = await invidious_proxy.get_video(video_id)
         if not data:
             raise invidious_proxy.InvidiousProxyError(
                 f"Video {video_id} not found on Invidious", is_retryable=False
+            )
+        # Live broadcasts: skip Invidious and let yt-dlp extract instead.
+        # Invidious + companion's POT for live segments is fragile (we've
+        # seen consistent 403s on /videoplayback even when IPs match);
+        # yt-dlp uses its own deno+bgutil pipeline which produces fresher
+        # tokens. Falling through to the hybrid path picks up yt-dlp.
+        if _looks_like_live(data):
+            logger.info(
+                f"[Videos] Live broadcast detected for {video_id}; "
+                "skipping Invidious in favour of yt-dlp"
+            )
+            raise invidious_proxy.InvidiousProxyError(
+                f"Live broadcast {video_id} — deferring to yt-dlp",
+                is_retryable=False,
             )
         response = invidious_to_video_response(
             data,
