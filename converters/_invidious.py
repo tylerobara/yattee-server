@@ -7,9 +7,11 @@ from typing import Optional
 import tokens as token_utils
 from converters._helpers import (
     _convert_invidious_thumbnail_to_proxy,
+    _enrich_audio_display_name,
     _extract_region_from_label,
     _filter_sensitive_headers,
     _label_to_lang_code,
+    _xtags_from_url,
     resolve_invidious_url,
 )
 from models import (
@@ -155,8 +157,15 @@ def invidious_to_video_response(
         audio_track = None
         if fmt.get("audioTrack"):
             track = fmt["audioTrack"]
+            # iOS Yattee determines "original audio" from displayName containing
+            # "original" (or URL xtags). The relay proxy hides xtags by URL-encoding
+            # the upstream URL, so parse xtags from `original_url` *before* it's
+            # wrapped and bake the marker into displayName.
+            xtags = _xtags_from_url(original_url)
+            display_name = _enrich_audio_display_name(track.get("displayName"), xtags)
+            is_default = track.get("isDefault", False) or xtags.get("acont") == "original"
             audio_track = AudioTrack(
-                id=track.get("id"), displayName=track.get("displayName"), isDefault=track.get("isDefault", False)
+                id=track.get("id"), displayName=display_name, isDefault=is_default
             )
 
         adaptive_formats.append(

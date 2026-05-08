@@ -4,7 +4,7 @@ import urllib.parse
 from typing import Dict, List, Optional
 
 import tokens as token_utils
-from converters._helpers import _filter_sensitive_headers
+from converters._helpers import _enrich_audio_display_name, _filter_sensitive_headers, _xtags_from_url
 from models import (
     AdaptiveFormat,
     AudioTrack,
@@ -284,8 +284,10 @@ def convert_formats(
                 # Check if this is the original audio track
                 # yt-dlp marks original tracks with "original" in format_note
                 # Note: "(default)" means default for the user's locale, NOT the original track
-                is_original = "original" in format_note.lower()
-                audio_track = AudioTrack(id=lang, displayName=format_note or lang, isDefault=is_original)
+                xtags = _xtags_from_url(direct_url)
+                is_original = "original" in format_note.lower() or xtags.get("acont") == "original"
+                display_name = _enrich_audio_display_name(format_note or lang, xtags)
+                audio_track = AudioTrack(id=lang, displayName=display_name, isDefault=is_original)
 
             adaptive_formats.append(
                 AdaptiveFormat(

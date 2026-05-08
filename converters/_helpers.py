@@ -1,6 +1,7 @@
 """URL resolution, header filtering, and language maps."""
 
 import re
+import urllib.parse
 from typing import Dict, Optional
 
 # Sensitive HTTP headers that should never be exposed to clients
@@ -208,6 +209,65 @@ def resolve_invidious_url(url: str, invidious_base_url: str) -> str:
 
     # Already absolute or other format - return as-is
     return url
+
+
+def _xtags_from_url(url: Optional[str]) -> Dict[str, str]:
+    """Parse YouTube googlevideo `xtags=` query param into key/value pairs.
+
+    YouTube encodes per-track audio metadata in the `xtags` query param of
+    googlevideo URLs, e.g. `xtags=acont%3Doriginal%3Alang%3Den-US`. After
+    URL-decoding, the value is `:`-separated `key=value` pairs:
+    `acont=original:lang=en-US:drc=1`.
+
+    Returns an empty dict if the URL has no xtags or it cannot be parsed.
+    """
+    if not url:
+        return {}
+    parsed = urllib.parse.urlparse(url)
+    qs = urllib.parse.parse_qs(parsed.query)
+    raw = qs.get("xtags", [None])[0]
+    if not raw:
+        return {}
+    out: Dict[str, str] = {}
+    for pair in raw.split(":"):
+        if "=" in pair:
+            k, v = pair.split("=", 1)
+            out[k] = v
+    return out
+
+
+def _enrich_audio_display_name(display_name: Optional[str], xtags: Dict[str, str]) -> Optional[str]:
+    """Annotate an audio track displayName so the iOS client can detect track type.
+
+    iOS Yattee identifies the original audio by checking whether displayName
+    contains the substring "original" (case-insensitive); auto-dubbed tracks
+    are detected via "Auto-dubbed". When the upstream URL's xtags mark the
+    track as `acont=original` or `acont=dubbed-auto` but the displayName
+    lacks the keyword (common with Invidious responses), append it.
+
+    Pass-through when there is no useful xtags marker.
+    """
+    if not xtags:
+        return display_name
+    acont = xtags.get("acont")
+    lang = xtags.get("lang")
+    base = (display_name or lang or "").strip()
+
+    if acont == "original":
+        if not base:
+            return "original"
+        if "original" in base.lower():
+            return base
+        return f"{base} original"
+
+    if acont == "dubbed-auto":
+        if not base:
+            return "Auto-dubbed"
+        if "auto-dubbed" in base.lower():
+            return base
+        return f"{base} (Auto-dubbed)"
+
+    return display_name
 
 
 def _convert_invidious_thumbnail_to_proxy(url: str, base_url: str, token: str = "") -> str:
