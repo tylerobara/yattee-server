@@ -154,19 +154,24 @@ def invidious_to_video_response(
         itag = str(fmt.get("itag", ""))
         url = _proxy_url(original_url, itag, content_type=fmt.get("type"))
 
+        # iOS Yattee determines "original audio" from displayName containing
+        # "original" (or URL xtags). The relay proxy hides xtags by URL-encoding
+        # the upstream URL, so parse xtags from `original_url` *before* it's
+        # wrapped and bake the marker into displayName.
+        #
+        # Invidious frequently omits the `audioTrack` object on adaptive formats
+        # for multi-language videos — the language metadata only lives in the
+        # upstream URL's xtags. Synthesize an AudioTrack from xtags in that case
+        # so the iOS client can tell the tracks apart.
         audio_track = None
-        if fmt.get("audioTrack"):
-            track = fmt["audioTrack"]
-            # iOS Yattee determines "original audio" from displayName containing
-            # "original" (or URL xtags). The relay proxy hides xtags by URL-encoding
-            # the upstream URL, so parse xtags from `original_url` *before* it's
-            # wrapped and bake the marker into displayName.
-            xtags = _xtags_from_url(original_url)
+        is_audio_only = (fmt.get("type") or "").startswith("audio/")
+        track = fmt.get("audioTrack") or {}
+        xtags = _xtags_from_url(original_url) if is_audio_only else {}
+        if track or (is_audio_only and xtags):
             display_name = _enrich_audio_display_name(track.get("displayName"), xtags)
             is_default = track.get("isDefault", False) or xtags.get("acont") == "original"
-            audio_track = AudioTrack(
-                id=track.get("id"), displayName=display_name, isDefault=is_default
-            )
+            track_id = track.get("id") or xtags.get("lang")
+            audio_track = AudioTrack(id=track_id, displayName=display_name, isDefault=is_default)
 
         adaptive_formats.append(
             AdaptiveFormat(

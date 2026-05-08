@@ -62,3 +62,66 @@ class TestEnrichAudioDisplayName:
     def test_unknown_acont_passthrough(self):
         xtags = {"acont": "descriptive", "lang": "en"}
         assert _enrich_audio_display_name("English descriptive", xtags) == "English descriptive"
+
+
+class TestInvidiousVideoResponseSynthesizesAudioTrack:
+    """End-to-end: Invidious omits audioTrack but the upstream URL has xtags.
+
+    The converter must synthesize an AudioTrack so iOS can distinguish the
+    original from dubbed tracks.
+    """
+
+    def _info(self):
+        return {
+            "videoId": "ElSWgM6vJhE",
+            "title": "t",
+            "author": "a",
+            "authorId": "aid",
+            "lengthSeconds": 60,
+            "viewCount": 1,
+            "published": 0,
+            "publishedText": "",
+            "videoThumbnails": [],
+            "authorThumbnails": [],
+            "captions": [],
+            "formatStreams": [],
+            "adaptiveFormats": [
+                {
+                    "itag": "251",
+                    "url": "https://gv/videoplayback?itag=251&xtags=acont%3Doriginal%3Alang%3Den-US",
+                    "type": "audio/webm; codecs=\"opus\"",
+                },
+                {
+                    "itag": "251",
+                    "url": "https://gv/videoplayback?itag=251&xtags=acont%3Ddubbed-auto%3Alang%3Dfr-FR",
+                    "type": "audio/webm; codecs=\"opus\"",
+                },
+                {
+                    "itag": "137",
+                    "url": "https://gv/videoplayback?itag=137",
+                    "type": "video/mp4; codecs=\"avc1.640028\"",
+                },
+            ],
+        }
+
+    def test_synthesizes_audio_track_from_xtags(self):
+        from converters._invidious import invidious_to_video_response
+
+        resp = invidious_to_video_response(self._info(), base_url="", proxy_streams=False)
+        audio_formats = [f for f in resp.adaptiveFormats if (f.type or "").startswith("audio/")]
+        assert len(audio_formats) == 2
+
+        original = next(f for f in audio_formats if f.audioTrack and f.audioTrack.isDefault)
+        assert "original" in (original.audioTrack.displayName or "").lower()
+        assert original.audioTrack.id == "en-US"
+
+        dubbed = next(f for f in audio_formats if f.audioTrack and not f.audioTrack.isDefault)
+        assert "auto-dubbed" in (dubbed.audioTrack.displayName or "").lower()
+        assert dubbed.audioTrack.id == "fr-FR"
+
+    def test_video_only_format_has_no_audio_track(self):
+        from converters._invidious import invidious_to_video_response
+
+        resp = invidious_to_video_response(self._info(), base_url="", proxy_streams=False)
+        video = next(f for f in resp.adaptiveFormats if (f.type or "").startswith("video/"))
+        assert video.audioTrack is None
