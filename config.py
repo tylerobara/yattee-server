@@ -43,6 +43,14 @@ YTDLP_SKIP_TLS_VERIFY = os.getenv("YTDLP_SKIP_TLS_VERIFY", "false").lower() in (
 # Format: http://[user:pass@]host:port or socks5://host:port
 YT_EGRESS_PROXY = os.getenv("YT_EGRESS_PROXY") or None
 
+# Additional CIDR ranges to permit through the SSRF guard.
+# Comma-separated list of IPv4/IPv6 networks in CIDR notation, e.g.
+# "10.20.30.0/24,fd00::/8" — useful when a backing service (Invidious /
+# yattee-server companion) lives on the LAN and returns stream URLs that
+# point at private IPs. Entries are parsed at startup; malformed values
+# are logged and dropped. Loopback is always blocked regardless.
+SSRF_EXTRA_ALLOWED_CIDRS = os.getenv("SSRF_EXTRA_ALLOWED_CIDRS", "")
+
 # Auto-provisioning (optional, for automated deployments)
 # When ADMIN_USERNAME and ADMIN_PASSWORD are both set, an admin user is auto-created/updated on startup
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME")

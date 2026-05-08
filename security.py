@@ -107,10 +107,49 @@ def _resolve_hostname(hostname: str) -> List[str]:
 # Ranges that Python's is_private flags but are safe for SSRF purposes.
 # These are not RFC 1918 private networks and are commonly used by
 # VPN, proxy, DNS, and carrier-grade NAT services.
-_SSRF_ALLOWED_RANGES = (
+_SSRF_BUILTIN_ALLOWED_RANGES = (
     ipaddress.ip_network("198.18.0.0/15"),   # RFC 2544 benchmarking
     ipaddress.ip_network("100.64.0.0/10"),   # RFC 6598 CGNAT / Tailscale
 )
+
+
+def _parse_extra_allowed_cidrs(raw: str):
+    """Parse a comma-separated CIDR list, logging and dropping malformed entries."""
+    if not raw:
+        return ()
+    parsed = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            parsed.append(ipaddress.ip_network(item, strict=False))
+        except ValueError as e:
+            logger.warning(f"Ignoring malformed SSRF allow-list CIDR {item!r}: {e}")
+    return tuple(parsed)
+
+
+# Resolved at import time from the SSRF_EXTRA_ALLOWED_CIDRS env var.
+# Lets operators permit additional private ranges (e.g. their LAN) without
+# disabling the SSRF guard entirely. Loopback is still blocked unconditionally
+# — see _is_ip_safe ordering.
+try:
+    import config as _config  # local import; avoids hard cycles at module load
+    _SSRF_EXTRA_ALLOWED_RANGES = _parse_extra_allowed_cidrs(
+        getattr(_config, "SSRF_EXTRA_ALLOWED_CIDRS", "")
+    )
+except Exception as _e:  # pragma: no cover - defensive
+    logger.warning(f"Could not load SSRF_EXTRA_ALLOWED_CIDRS from config: {_e}")
+    _SSRF_EXTRA_ALLOWED_RANGES = ()
+
+_SSRF_ALLOWED_RANGES = _SSRF_BUILTIN_ALLOWED_RANGES + _SSRF_EXTRA_ALLOWED_RANGES
+
+if _SSRF_EXTRA_ALLOWED_RANGES:
+    logger.info(
+        "SSRF guard: %d extra allowed CIDR(s): %s",
+        len(_SSRF_EXTRA_ALLOWED_RANGES),
+        ", ".join(str(n) for n in _SSRF_EXTRA_ALLOWED_RANGES),
+    )
 
 
 def _is_ip_safe(ip_str: str) -> Tuple[bool, Optional[str]]:

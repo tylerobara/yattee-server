@@ -478,6 +478,87 @@ class TestIsIpSafeAllowedRanges:
         assert "loopback" in reason
 
 
+class TestSsrfExtraAllowedCidrs:
+    """Tests for the SSRF_EXTRA_ALLOWED_CIDRS env-var allow list."""
+
+    def test_extra_cidr_allows_lan_ip(self, monkeypatch):
+        """An IP inside an extra allow-listed CIDR is permitted."""
+        import security
+
+        ranges = security._parse_extra_allowed_cidrs("10.20.30.0/24")
+        monkeypatch.setattr(
+            security,
+            "_SSRF_ALLOWED_RANGES",
+            security._SSRF_BUILTIN_ALLOWED_RANGES + ranges,
+        )
+
+        is_safe, _ = security._is_ip_safe("10.20.30.100")
+        assert is_safe is True
+
+    def test_extra_cidr_does_not_open_other_private_ranges(self, monkeypatch):
+        """Allow-listing 10.20.30.0/24 must not unblock 192.168.x.x."""
+        import security
+
+        ranges = security._parse_extra_allowed_cidrs("10.20.30.0/24")
+        monkeypatch.setattr(
+            security,
+            "_SSRF_ALLOWED_RANGES",
+            security._SSRF_BUILTIN_ALLOWED_RANGES + ranges,
+        )
+
+        is_safe, reason = security._is_ip_safe("192.168.1.5")
+        assert is_safe is False
+        assert "private" in reason
+
+    def test_loopback_still_blocked_even_if_in_extra_cidr(self, monkeypatch):
+        """Loopback is checked before the allow list — can't be unblocked."""
+        import security
+
+        # Pathological config: someone allow-lists 127.0.0.0/8.
+        ranges = security._parse_extra_allowed_cidrs("127.0.0.0/8")
+        monkeypatch.setattr(
+            security,
+            "_SSRF_ALLOWED_RANGES",
+            security._SSRF_BUILTIN_ALLOWED_RANGES + ranges,
+        )
+
+        is_safe, reason = security._is_ip_safe("127.0.0.1")
+        assert is_safe is False
+        assert "loopback" in reason
+
+    def test_malformed_entries_dropped(self):
+        """Malformed CIDR strings are logged and dropped, not raised."""
+        from security import _parse_extra_allowed_cidrs
+
+        # Mix of valid, blank, and garbage entries.
+        result = _parse_extra_allowed_cidrs("10.20.30.0/24, , not-a-cidr, 192.168.0.0/16")
+        cidrs = [str(n) for n in result]
+        assert "10.20.30.0/24" in cidrs
+        assert "192.168.0.0/16" in cidrs
+        assert len(result) == 2
+
+    def test_empty_string_returns_empty(self):
+        """Empty/whitespace-only env var yields no extra ranges."""
+        from security import _parse_extra_allowed_cidrs
+
+        assert _parse_extra_allowed_cidrs("") == ()
+        assert _parse_extra_allowed_cidrs("   ") == ()
+
+    def test_default_blocks_lan_ip(self, monkeypatch):
+        """Without extra CIDRs, a 10.x LAN IP is still blocked (regression)."""
+        import security
+
+        # Force the built-in-only set, so the test is deterministic regardless
+        # of the developer's local SSRF_EXTRA_ALLOWED_CIDRS env var.
+        monkeypatch.setattr(
+            security, "_SSRF_ALLOWED_RANGES", security._SSRF_BUILTIN_ALLOWED_RANGES
+        )
+
+        is_safe, reason = security._is_ip_safe("10.20.30.100")
+        assert is_safe is False
+        assert "private" in reason
+
+
 class TestIsSafeUrlStrict:
     """Tests for is_safe_url_strict function (strict SSRF prevention with DNS resolution)."""
 
