@@ -23,10 +23,11 @@ Get video metadata including streams, captions, and related videos. Invidious-co
 - `video_id` (string) - YouTube video ID
 
 **Query Parameters:**
-- `proxy` (boolean, optional) - Include proxy stream URLs
-- `invidious` (boolean, optional) - Prefer Invidious data source
+- `proxy` (boolean, optional) - Override the site `proxy_streaming` setting (true = proxy stream URLs, false = direct)
+- `proxy_mode` (string, optional) - How to proxy stream URLs when proxying is on: `relay` (default — byte-relay through `/proxy/relay`, supports Range, no disk write), `download` (route through `/proxy/fast/` — downloads via yt-dlp and caches on disk), or `off` (bypass proxying)
+- `invidious` (boolean, optional) - Force extraction path. Unset: try Invidious first then fall back to InnerTube/yt-dlp. `true`: Invidious only. `false`: InnerTube/yt-dlp only.
 
-**Response:** Invidious-compatible video object with `formatStreams`, `adaptiveFormats`, `captions`, and metadata fields.
+**Response:** Invidious-compatible video object with `formatStreams`, `adaptiveFormats`, `captions`, and metadata fields. Includes an `extractionMethod` field indicating which path served the video: `"invidious"`, `"hybrid"` (InnerTube + yt-dlp), or `"ytdlp"`.
 
 ---
 
@@ -284,7 +285,7 @@ Check feed fetch status for a list of channels.
 
 ### GET `/proxy/fast/{video_id}`
 
-Stream video using yt-dlp's parallel downloading. Downloads and streams the video simultaneously for fast playback.
+Stream video using yt-dlp's parallel downloading. Downloads and streams the video simultaneously for fast playback. Best suited for the download flow — bytes are cached to disk.
 
 **Path Parameters:**
 - `video_id` (string) - Video ID
@@ -296,6 +297,20 @@ Stream video using yt-dlp's parallel downloading. Downloads and streams the vide
 - `token` (string, optional) - Auth token (required when auth is enabled)
 
 **Response:** Streaming video content with appropriate `Content-Type` header.
+
+---
+
+### GET `/proxy/relay`
+
+Signed byte-relay for direct playback streams. The video endpoint embeds these URLs into `formatStreams` / `adaptiveFormats` when `proxy_mode=relay` (the default). Supports HTTP `Range` requests, forwards conditional headers, and rewrites HLS/DASH manifests so segments are also relayed. Does not write to disk.
+
+**Query Parameters:**
+- `url` (string, required) - Upstream stream URL to relay (signed)
+- `sig` (string, required) - HMAC signature binding `url` and `exp`
+- `exp` (integer, required) - Expiry as a Unix timestamp; requests after this are rejected
+- `ct` (string, optional) - Content type hint, used to detect HLS/DASH manifests when the upstream `Content-Type` is generic
+
+**Response:** Relayed bytes with the upstream `Content-Type` (or rewritten manifest for HLS/DASH). Honors `Range`. Returns `403` for an expired/invalid signature or a URL that targets a restricted network (SSRF guard).
 
 ---
 
