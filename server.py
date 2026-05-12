@@ -157,8 +157,37 @@ app.include_router(invidious_proxy.router, prefix="/api/v1")
 
 @app.get("/health")
 async def health():
-    """Health check endpoint."""
-    return {"status": "ok"}
+    """Health check endpoint. Verifies database connectivity and reports connection type."""
+    from fastapi.responses import JSONResponse
+
+    db_type = "postgres" if database.is_postgres() else "sqlite"
+    db_url = database.get_database_url()
+    # Redact credentials from the URL for safe display
+    try:
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(db_url)
+        safe_url = urlunparse(parsed._replace(netloc=parsed.hostname or ""))
+    except Exception:
+        safe_url = db_type
+
+    try:
+        with database.get_connection() as conn:
+            conn.cursor().execute("SELECT 1")
+        return {"status": "ok", "database": {"status": "ok", "type": db_type, "url": safe_url}}
+    except Exception as exc:
+        logger.error("Health check: database connection failed: %s", exc)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "degraded",
+                "database": {
+                    "status": "error",
+                    "type": db_type,
+                    "url": safe_url,
+                    "error": str(exc),
+                },
+            },
+        )
 
 
 async def get_version(cmd: list[str]) -> str:

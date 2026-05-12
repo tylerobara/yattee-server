@@ -16,8 +16,8 @@ services:
     restart: unless-stopped
 
   yattee-server:
-    # build: .
-    image: yattee-server:psql
+    build: .
+    # image: yattee-server:psql
     container_name: yattee-server
     ports:
       - "8085:8085"
