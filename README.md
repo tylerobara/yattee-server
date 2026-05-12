@@ -12,11 +12,13 @@ A self-hosted API server powered by [yt-dlp](https://github.com/yt-dlp/yt-dlp) t
 ## Features
 
 - **Multi-site extraction** - YouTube plus any site supported by [yt-dlp](https://github.com/yt-dlp/yt-dlp) (Twitch, Vimeo, BiliBili, etc.) with per-site credentials
+- **Layered metadata sources** - InnerTube, Invidious, and yt-dlp used together with automatic fallbacks for video, channel, and search data
 - **Admin panel** - Web UI with setup wizard, settings management, site configuration, and user management
 - **Authentication** - HTTP Basic Auth, HMAC-signed stream URLs, and rate limiting
 - **Invidious proxy** - Optional backing Invidious instance for trending, popular, search suggestions, comments, captions, thumbnails, and avatars
 - **Feed system** - Background feed fetcher for channel subscriptions with automatic refresh
-- **Stream proxy** - Fast parallel downloading via yt-dlp with streaming delivery
+- **Stream proxy** - Fast parallel downloading via yt-dlp with streaming delivery, plus a `/proxy/relay` byte-relay for direct playback streams
+- **Egress proxy** - Optional HTTP/SOCKS proxy for YouTube-bound traffic (yt-dlp + InnerTube), runtime-configurable from the admin panel
 - **Search** - YouTube search with filters (sort, date, duration, type)
 - **Channels** - Full channel browsing: videos, playlists, shorts, streams, search, avatars
 - **Invidious-compatible API** - Drop-in replacement for [Invidious](https://github.com/iv-org/invidious) API endpoints
@@ -59,7 +61,7 @@ Open `http://localhost:8085` to complete setup.
 
 ## Configuration
 
-Yattee Server has two layers of configuration: startup environment variables (`.env` file) and runtime settings (admin panel, stored in database). See [docs/configuration.md](docs/configuration.md) for the full reference.
+Yattee Server has two layers of configuration: startup environment variables (`.env` file) and runtime settings (admin panel, stored in database). Network-related env vars include `YT_EGRESS_PROXY` (HTTP/SOCKS proxy for YouTube-bound traffic) and `SSRF_EXTRA_ALLOWED_CIDRS` (allow-list extra CIDRs through the SSRF guard, e.g. for a LAN Invidious instance). See [docs/configuration.md](docs/configuration.md) for the full reference.
 
 ## API Endpoints
 
@@ -70,7 +72,7 @@ API with endpoints for video extractions, search, channels, playlists, comments,
 The web-based admin panel is accessible at `/admin` and provides:
 
 - **Setup wizard** - First-run configuration to create the initial admin account and optionally connect an Invidious instance
-- **Settings** - All runtime settings (cache TTLs, yt-dlp config, Invidious proxy, feed fetcher, rate limiting, etc.)
+- **Settings** - All runtime settings (cache TTLs, yt-dlp config, Invidious proxy, feed fetcher, network/egress proxy, rate limiting, etc.)
 - **Sites** - Configure extraction sites with credentials (cookies, API keys) for yt-dlp
 - **Users** - Manage admin and regular user accounts
 - **Watched channels** - View feed fetcher status and trigger manual refreshes

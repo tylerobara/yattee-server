@@ -15,6 +15,7 @@ def get_settings_row() -> Optional[Dict[str, Any]]:
             result = dict(row)
             # Convert integer booleans to actual booleans
             for key in [
+                "yt_egress_proxy_enabled",
                 "innertube_enabled",
                 "invidious_enabled",
                 "invidious_author_thumbnails",

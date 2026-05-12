@@ -44,6 +44,8 @@ class SettingsResponse(BaseModel):
     cache_extract_ttl: int
     default_search_results: int
     max_search_results: int
+    yt_egress_proxy_enabled: bool
+    yt_egress_proxy: Optional[str]
     innertube_enabled: bool
     invidious_enabled: bool
     invidious_instance: Optional[str]
@@ -57,6 +59,7 @@ class SettingsResponse(BaseModel):
     invidious_proxy_playlists: bool
     invidious_proxy_captions: bool
     invidious_proxy_thumbnails: bool
+    invidious_local_streams: bool
     feed_fetch_interval: int
     feed_channel_delay: int
     feed_max_videos: int
@@ -83,6 +86,8 @@ class SettingsUpdate(BaseModel):
     cache_extract_ttl: Optional[int] = None
     default_search_results: Optional[int] = None
     max_search_results: Optional[int] = None
+    yt_egress_proxy_enabled: Optional[bool] = None
+    yt_egress_proxy: Optional[str] = None
     innertube_enabled: Optional[bool] = None
     invidious_enabled: Optional[bool] = None
     invidious_instance: Optional[str] = None
@@ -96,6 +101,7 @@ class SettingsUpdate(BaseModel):
     invidious_proxy_playlists: Optional[bool] = None
     invidious_proxy_captions: Optional[bool] = None
     invidious_proxy_thumbnails: Optional[bool] = None
+    invidious_local_streams: Optional[bool] = None
     feed_fetch_interval: Optional[int] = None
     feed_channel_delay: Optional[int] = None
     feed_max_videos: Optional[int] = None
@@ -153,6 +159,15 @@ async def update_settings(data: SettingsUpdate, admin: dict = Depends(get_curren
             reset_caches()
         except ImportError:
             pass  # reset_caches not yet implemented
+
+    # Reset InnerTube httpx client when egress proxy changes (it's cached at module level)
+    if "yt_egress_proxy" in update_data or "yt_egress_proxy_enabled" in update_data:
+        try:
+            from innertube._client import reset_client
+
+            await reset_client()
+        except ImportError:
+            pass
 
     return SettingsResponse(**new_settings.model_dump())
 

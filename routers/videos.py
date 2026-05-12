@@ -62,87 +62,164 @@ async def get_video(
     video_id: str,
     request: Request,
     proxy: Optional[bool] = Query(None, description="Override site proxy_streaming setting (true=proxy, false=direct)"),
+    proxy_mode: Optional[str] = Query(
+        None,
+        description=(
+            "How to proxy stream URLs when proxying is on. "
+            "'relay' (default): byte-relay through /proxy/relay (fast, supports Range, no disk write). "
+            "'download': /proxy/fast/ — downloads via yt-dlp, caches on disk (right shape for downloads). "
+            "'off': bypass proxying entirely. "
+            "Ignored when the per-site proxy_streaming flag (or ?proxy=) is off."
+        ),
+        pattern="^(relay|download|off)$",
+    ),
     invidious: Optional[bool] = Query(
-        None, description="Override INVIDIOUS_PROXY_VIDEOS config (true=use Invidious, false=use yt-dlp)"
+        None,
+        description=(
+            "Force a specific extraction path. Unset (default): try Invidious first when enabled, "
+            "fall back to InnerTube/yt-dlp. true: Invidious only (fails if disabled/unavailable). "
+            "false: InnerTube/yt-dlp only (no Invidious fallback)."
+        ),
     ),
 ):
     """Get video details including streams (Invidious-compatible).
 
-    Args:
-        video_id: YouTube video ID
-        proxy: Override the site's proxy_streaming setting. If not provided, uses
-               the YouTube site configuration. When true, stream URLs point to
-               /proxy/fast/ for proxied downloads. When false, direct CDN URLs.
-        invidious: Override the INVIDIOUS_PROXY_VIDEOS config setting. If not provided,
-                   uses the config default.
+    Response includes `extractionMethod` indicating which path served the video:
+    "invidious", "hybrid" (InnerTube + yt-dlp), or "ytdlp".
     """
-    # Validate that YouTube extraction is allowed
     validate_extractor_allowed("youtube")
 
     base_url = get_base_url(request)
     s = get_settings()
 
-    # Get user_id for token generation if basic auth is enabled
     user = get_current_user_from_request(request)
     user_id = user.get("id") if user else None
 
-    # Get proxy_streaming setting from YouTube site config
     site_config = database.get_site_by_extractor("youtube")
     site_proxy_streaming = site_config.get("proxy_streaming", True) if site_config else True
-
-    # Query param overrides site config if explicitly provided
     proxy_streams = proxy if proxy is not None else site_proxy_streaming
 
-    # Explicit invidious=true forces Invidious (no fallback on success)
-    if invidious is True and invidious_proxy.is_enabled():
-        try:
-            data = await invidious_proxy.get_video(video_id)
-            if data and not data.get("liveNow", False):
-                invidious_base = invidious_proxy.get_base_url()
-                response = invidious_to_video_response(
-                    data, base_url, proxy_streams=proxy_streams, invidious_base_url=invidious_base, user_id=user_id
-                )
-                channel_id = data.get("authorId")
-                if channel_id:
-                    avatar_cache.get_cache().schedule_background_fetch(channel_id)
-                return response
-        except invidious_proxy.InvidiousProxyError:
-            pass  # Fall through to default path
+    # Resolve proxy_mode. When proxying is off, mode is irrelevant. When on,
+    # default to "relay" (fast path). "download" preserves the legacy
+    # /proxy/fast/ shape for the iOS download flow.
+    if not proxy_streams:
+        effective_proxy_mode = "off"
+    elif proxy_mode in ("relay", "download"):
+        effective_proxy_mode = proxy_mode
+    else:
+        effective_proxy_mode = "relay"
 
-    # Default path: InnerTube metadata + yt-dlp stream URLs in parallel
-    try:
-        response = await _get_video_hybrid(
-            video_id, base_url, proxy_streams=proxy_streams, user_id=user_id
+    invidious_usable = invidious_proxy.is_enabled() and s.invidious_proxy_videos
+
+    def _looks_like_live(data: dict) -> bool:
+        """Detect a live broadcast from the extracted Invidious response.
+
+        Invidious's own ``liveNow`` flag has been observed to be wrong for
+        streams that just went live, so the URL params are treated as
+        authoritative — `source=yt_live_broadcast` / `&live=1` / `?live=1`
+        baked into any extracted format URL means it's a live broadcast.
+        """
+        if data.get("liveNow") or data.get("isUpcoming"):
+            return True
+
+        def _live_url(u):
+            return bool(u) and (
+                "source=yt_live_broadcast" in u
+                or "&live=1" in u
+                or "?live=1" in u
+            )
+
+        for f in (data.get("adaptiveFormats") or []):
+            if _live_url(f.get("url") or ""):
+                return True
+        for f in (data.get("formatStreams") or []):
+            if _live_url(f.get("url") or ""):
+                return True
+        return False
+
+    async def _via_invidious() -> VideoResponse:
+        data = await invidious_proxy.get_video(video_id)
+        if not data:
+            raise invidious_proxy.InvidiousProxyError(
+                f"Video {video_id} not found on Invidious", is_retryable=False
+            )
+        # Live broadcasts: skip Invidious and let yt-dlp extract instead.
+        # Invidious + companion's POT for live segments is fragile (we've
+        # seen consistent 403s on /videoplayback even when IPs match);
+        # yt-dlp uses its own deno+bgutil pipeline which produces fresher
+        # tokens. Falling through to the hybrid path picks up yt-dlp.
+        if _looks_like_live(data):
+            logger.info(
+                f"[Videos] Live broadcast detected for {video_id}; "
+                "skipping Invidious in favour of yt-dlp"
+            )
+            raise invidious_proxy.InvidiousProxyError(
+                f"Live broadcast {video_id} — deferring to yt-dlp",
+                is_retryable=False,
+            )
+        response = invidious_to_video_response(
+            data,
+            base_url,
+            proxy_streams=proxy_streams,
+            proxy_mode=effective_proxy_mode,
+            invidious_base_url=invidious_proxy.get_base_url(),
+            user_id=user_id,
         )
-        if response is not None:
-            return response
+        response.extractionMethod = "invidious"
+        channel_id = data.get("authorId")
+        if channel_id:
+            avatar_cache.get_cache().schedule_background_fetch(channel_id)
+        return response
+
+    async def _via_hybrid() -> VideoResponse:
+        response = await _get_video_hybrid(
+            video_id, base_url, proxy_streams=proxy_streams,
+            proxy_mode=effective_proxy_mode, user_id=user_id,
+        )
+        if response is None:
+            raise HTTPException(status_code=404, detail="Video not found")
+        return response
+
+    # invidious=true: force Invidious, no fallback
+    if invidious is True:
+        if not invidious_usable:
+            raise HTTPException(
+                status_code=503,
+                detail="Invidious is disabled or not configured for video requests",
+            )
+        try:
+            return await _via_invidious()
+        except invidious_proxy.InvidiousProxyError as e:
+            raise HTTPException(status_code=502, detail=f"Invidious error: {e}")
+
+    # invidious=false: force hybrid, no Invidious fallback
+    if invidious is False:
+        try:
+            return await _via_hybrid()
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        except YtDlpError as e:
+            raise HTTPException(status_code=404, detail=f"Video not found: {e}")
+        except (KeyError, TypeError) as e:
+            logger.error(f"[Videos] Unexpected error for {video_id}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # Default: Invidious first when usable, hybrid as fallback
+    if invidious_usable:
+        try:
+            return await _via_invidious()
+        except invidious_proxy.InvidiousProxyError as e:
+            logger.info(f"[Videos] Invidious failed for {video_id}: {e}; falling back to hybrid")
+
+    try:
+        return await _via_hybrid()
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except YtDlpError as e:
-        # Last-resort Invidious fallback when yt-dlp fails and proxy config allows it
-        if s.invidious_proxy_videos and invidious_proxy.is_enabled() and invidious is not False:
-            try:
-                data = await invidious_proxy.get_video(video_id)
-                if data:
-                    invidious_base = invidious_proxy.get_base_url()
-                    response = invidious_to_video_response(
-                        data, base_url, proxy_streams=proxy_streams,
-                        invidious_base_url=invidious_base, user_id=user_id,
-                    )
-                    channel_id = data.get("authorId")
-                    if channel_id:
-                        avatar_cache.get_cache().schedule_background_fetch(channel_id)
-                    return response
-            except invidious_proxy.InvidiousProxyError:
-                pass
         raise HTTPException(status_code=404, detail=f"Video not found: {e}")
-    except invidious_proxy.InvidiousProxyError as e:
-        raise HTTPException(status_code=502, detail=f"Invidious error: {e}")
     except (KeyError, TypeError) as e:
         logger.error(f"[Videos] Unexpected error for {video_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-    raise HTTPException(status_code=404, detail="Video not found")
 
 
 async def _get_video_hybrid(
@@ -150,6 +227,7 @@ async def _get_video_hybrid(
     base_url: str,
     *,
     proxy_streams: bool,
+    proxy_mode: str,
     user_id: Optional[int],
 ) -> Optional[VideoResponse]:
     """Run InnerTube (/player + /next) and yt-dlp in parallel, merge the result.
@@ -187,7 +265,8 @@ async def _get_video_hybrid(
     if it_video is None or it_video.get("liveNow", False):
         if it_error is None and it_video is None:
             logger.debug(f"[Videos] InnerTube disabled; using yt-dlp for {video_id}")
-        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, user_id=user_id)
+        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id)
+        response.extractionMethod = "ytdlp"
         channel_id = info.get("channel_id")
         if channel_id:
             avatar_cache.get_cache().schedule_background_fetch(channel_id)
@@ -213,8 +292,9 @@ async def _get_video_hybrid(
         logger.info(
             f"[Videos] InnerTube /player had no matching itags for {video_id}; enriching yt-dlp response from /next"
         )
-        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, user_id=user_id)
+        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id)
         _enrich_with_innertube_next(response, it_video)
+        response.extractionMethod = "hybrid"
         channel_id = info.get("channel_id") or it_video.get("authorId")
         if channel_id:
             avatar_cache.get_cache().schedule_background_fetch(channel_id)
@@ -222,8 +302,10 @@ async def _get_video_hybrid(
 
     merged = {**it_video, "formatStreams": format_streams, "adaptiveFormats": adaptive_formats}
     response = invidious_to_video_response(
-        merged, base_url, proxy_streams=proxy_streams, invidious_base_url="", user_id=user_id
+        merged, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode,
+        invidious_base_url="", user_id=user_id,
     )
+    response.extractionMethod = "hybrid"
 
     channel_id = it_video.get("authorId") or info.get("channel_id")
     if channel_id:
@@ -322,9 +404,14 @@ async def extract_video_url(
 
         site_config = database.get_site_by_extractor(extractor)
         proxy_streams = site_config.get("proxy_streaming", True) if site_config else True
+        # `extract_url` is the share-extension / external-URL flow; downloads
+        # of arbitrary sites benefit from the on-disk caching of /proxy/fast/,
+        # so default to "download" mode here rather than "relay".
+        ext_proxy_mode = "download" if proxy_streams else "off"
 
         response = ytdlp_to_video_response(
-            info, base_url, proxy_streams=proxy_streams, original_url=url, user_id=user_id
+            info, base_url, proxy_streams=proxy_streams, proxy_mode=ext_proxy_mode,
+            original_url=url, user_id=user_id,
         )
         return response
     except ValueError as e:

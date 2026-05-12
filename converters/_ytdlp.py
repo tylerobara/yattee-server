@@ -21,6 +21,26 @@ from models import (
 )
 
 
+def _maybe_relay_manifest(
+    url: Optional[str],
+    *,
+    base_url: str,
+    proxy_mode: str,
+    content_type: Optional[str] = None,
+) -> Optional[str]:
+    """Wrap an HLS/DASH manifest URL in a signed /proxy/relay link if relay
+    proxying is on. Returns the URL unchanged otherwise.
+
+    Manifest URLs from googlevideo are time-limited and IP-bound just like
+    individual segment URLs, so they need the same off-LAN handling.
+    """
+    if not url or proxy_mode != "relay" or not base_url:
+        return url
+    from routers.proxy import signed_relay_url
+
+    return signed_relay_url(base_url, url, content_type=content_type)
+
+
 def get_author_thumbnail_url(info: dict) -> Optional[str]:
     """Extract author/channel thumbnail URL from video info."""
     # yt-dlp sometimes includes channel thumbnail in the thumbnails array
@@ -79,15 +99,24 @@ def construct_author_url(
 
 
 def ytdlp_to_video_response(
-    info: dict, base_url: str = "", proxy_streams: bool = False, original_url: str = "", user_id: Optional[int] = None
+    info: dict,
+    base_url: str = "",
+    proxy_streams: bool = False,
+    proxy_mode: str = "download",
+    original_url: str = "",
+    user_id: Optional[int] = None,
 ) -> VideoResponse:
     """Convert yt-dlp video info to Invidious VideoResponse.
 
     Args:
         info: yt-dlp video info dict
         base_url: Base URL for caption URLs
-        proxy_streams: If True, stream URLs will point to /proxy/fast/{video_id}?itag=X
-                      for faster downloads through the server. If False, uses direct YouTube URLs.
+        proxy_streams: If True, stream URLs are proxied through this server.
+        proxy_mode: When proxying, which endpoint to use. ``"relay"`` →
+            ``/proxy/relay`` (byte-relay; right shape for playback).
+            ``"download"`` → ``/proxy/fast/`` (downloads via yt-dlp, caches
+            on disk; right shape for downloads). ``"off"`` is equivalent to
+            ``proxy_streams=False``. Ignored when ``proxy_streams`` is False.
         original_url: Override URL for re-extraction (used for external sites)
     """
     video_id = info.get("id", "")
@@ -98,11 +127,14 @@ def ytdlp_to_video_response(
 
     # Build proxy base URL if proxy mode enabled
     proxy_base_url = f"{base_url}/proxy" if proxy_streams and base_url else ""
+    effective_proxy_mode = proxy_mode if proxy_streams else "off"
 
     format_streams, adaptive_formats = convert_formats(
         info.get("formats"),
         video_id=video_id,
         proxy_base_url=proxy_base_url,
+        proxy_mode=effective_proxy_mode,
+        base_url=base_url,
         original_url=original_url if proxy_streams else "",
         user_id=user_id,
     )
@@ -147,7 +179,12 @@ def ytdlp_to_video_response(
         videoThumbnails=convert_thumbnails(info.get("thumbnails")),
         liveNow=info.get("is_live") or False,
         isUpcoming=info.get("is_upcoming") or False,
-        hlsUrl=info.get("manifest_url") if info.get("is_live") else None,
+        hlsUrl=_maybe_relay_manifest(
+            info.get("manifest_url") if info.get("is_live") else None,
+            base_url=base_url,
+            proxy_mode=effective_proxy_mode,
+            content_type="application/vnd.apple.mpegurl",
+        ),
         formatStreams=format_streams,
         adaptiveFormats=adaptive_formats,
         captions=convert_captions(info.get("subtitles"), info.get("automatic_captions"), video_id, base_url, user_id),

@@ -25,6 +25,8 @@ Set these in your `.env` file or as system/Docker environment variables.
 | `DEBUG` | boolean | `false` | Enable auto-reload for development |
 | `SECURE_COOKIES` | boolean | `true` | Enforce HTTPS-only cookies. Set to `false` for local development without HTTPS. |
 | `YTDLP_SKIP_TLS_VERIFY` | boolean | `false` | Skip TLS certificate verification in yt-dlp. Not recommended for production. |
+| `YT_EGRESS_PROXY` | string | *(none)* | HTTP/SOCKS proxy for YouTube-bound traffic (yt-dlp, InnerTube, Invidious fallback). Format: `http://[user:pass@]host:port` or `socks5://host:port`. Sets the startup default; runtime value can be overridden in the admin panel. |
+| `SSRF_EXTRA_ALLOWED_CIDRS` | string | *(empty)* | Comma-separated CIDR ranges (IPv4/IPv6) to permit through the SSRF guard, e.g. `10.20.30.0/24,fd00::/8`. Useful when a backing service (Invidious, companion) lives on the LAN and returns stream URLs pointing at private IPs. Loopback is always blocked. |
 | `ADMIN_USERNAME` | string | *(none)* | Auto-provisioning: creates or updates an admin user with this username on startup |
 | `ADMIN_PASSWORD` | string | *(none)* | Auto-provisioning: password for the auto-provisioned admin. Both `ADMIN_USERNAME` and `ADMIN_PASSWORD` must be set. |
 | `INVIDIOUS_INSTANCE_URL` | string | *(none)* | Auto-provisioning: configures the Invidious instance URL and enables the proxy on startup |

@@ -12,6 +12,7 @@ from cryptography.fernet import InvalidToken
 import config
 import database
 import encryption
+import settings as settings_module
 
 logger = logging.getLogger("innertube")
 
@@ -211,6 +212,7 @@ async def get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             timeout=httpx.Timeout(15),
             follow_redirects=True,
+            proxy=settings_module.get_settings().effective_yt_egress_proxy(),
             headers={
                 "User-Agent": (
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -222,6 +224,21 @@ async def get_client() -> httpx.AsyncClient:
             },
         )
     return _client
+
+
+async def reset_client() -> None:
+    """Close the cached HTTP client so the next get_client() rebuilds it.
+
+    Used after settings changes (e.g. yt_egress_proxy) to apply the new config
+    without restarting the server.
+    """
+    global _client
+    if _client is not None and not _client.is_closed:
+        try:
+            await _client.aclose()
+        except Exception:
+            logger.exception("Failed to close InnerTube httpx client during reset")
+    _client = None
 
 
 async def innertube_post(endpoint: str, body: Dict[str, Any], use_cookies: bool = True) -> Any:

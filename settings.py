@@ -28,6 +28,22 @@ class Settings(BaseModel):
     default_search_results: int = Field(default=20, ge=5, le=50)
     max_search_results: int = Field(default=50, ge=10, le=100)
 
+    # YouTube egress proxy (used by yt-dlp + InnerTube)
+    yt_egress_proxy_enabled: bool = Field(
+        default=True,
+        description=(
+            "When false, the configured proxy is ignored — "
+            "useful for temporary disable without losing the value."
+        ),
+    )
+    yt_egress_proxy: Optional[str] = Field(
+        default=None,
+        description=(
+            "HTTP/SOCKS proxy for YouTube-bound traffic. "
+            "Format: http://[user:pass@]host:port or socks5://host:port"
+        ),
+    )
+
     # InnerTube (direct YouTube API)
     innertube_enabled: bool = True
 
@@ -44,6 +60,15 @@ class Settings(BaseModel):
     invidious_proxy_playlists: bool = True
     invidious_proxy_captions: bool = True
     invidious_proxy_thumbnails: bool = True
+    invidious_local_streams: bool = Field(
+        default=False,
+        description=(
+            "When true, request local=true from Invidious so stream URLs are "
+            "proxied through the Invidious instance (companion) instead of "
+            "pointing directly at googlevideo.com. Has no effect when the "
+            "site's proxy_streaming is on (yattee-server proxies instead)."
+        ),
+    )
 
     # Feed
     feed_fetch_interval: int = Field(default=21600, ge=300, le=86400)
@@ -82,6 +107,11 @@ class Settings(BaseModel):
     # Proxy/download cleanup
     proxy_download_max_age: int = Field(default=86400, ge=60, le=604800)
     proxy_max_concurrent_downloads: int = Field(default=3, ge=1, le=20)
+
+
+    def effective_yt_egress_proxy(self) -> Optional[str]:
+        """Return the egress proxy URL only if both configured and enabled."""
+        return self.yt_egress_proxy if self.yt_egress_proxy_enabled and self.yt_egress_proxy else None
 
 
 # In-memory cached settings
