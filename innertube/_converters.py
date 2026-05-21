@@ -473,11 +473,15 @@ def channel_renderer_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
 def rich_item_to_invidious(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Convert an InnerTube richItemRenderer to Invidious format.
 
-    richItemRenderer wraps a videoRenderer (used in trending, channel pages).
+    richItemRenderer wraps the actual item used in rich grids. YouTube channel
+    video tabs historically used videoRenderer here, but current WEB responses
+    use lockupViewModel for channel videos.
     """
     content = item.get("content", {})
     if "videoRenderer" in content:
         return video_renderer_to_invidious(content["videoRenderer"])
+    if "lockupViewModel" in content:
+        return _lockup_video_view_model_to_invidious(content["lockupViewModel"])
     if "reelItemRenderer" in content:
         return _reel_item_to_invidious(content["reelItemRenderer"])
     return None
@@ -900,11 +904,32 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
         .get("overlays", [])
     )
     for overlay in overlays:
-        badge = overlay.get("thumbnailOverlayBadgeViewModel", {})
-        for b in badge.get("thumbnailBadges", []):
-            text = b.get("thumbnailBadgeViewModel", {}).get("text", "")
-            if text and ":" in text:
-                length_seconds = _parse_duration_text(text)
+        badge_sources = []
+        direct_badge = overlay.get("thumbnailOverlayBadgeViewModel")
+        if direct_badge:
+            badge_sources.append(direct_badge)
+
+        # Current channel-video lockups wrap duration badges in
+        # thumbnailBottomOverlayViewModel.badges[].thumbnailBadgeViewModel.
+        bottom_overlay = overlay.get("thumbnailBottomOverlayViewModel", {})
+        for badge in bottom_overlay.get("badges", []):
+            nested_badge = badge.get("thumbnailBadgeViewModel")
+            if nested_badge:
+                badge_sources.append(nested_badge)
+
+        for badge in badge_sources:
+            # Older thumbnailOverlayBadgeViewModel shapes store a list under
+            # thumbnailBadges; newer nested thumbnailBadgeViewModel stores text directly.
+            badge_texts = [badge.get("text", "")]
+            badge_texts.extend(
+                b.get("thumbnailBadgeViewModel", {}).get("text", "")
+                for b in badge.get("thumbnailBadges", [])
+            )
+            for text in badge_texts:
+                if text and ":" in text:
+                    length_seconds = _parse_duration_text(text)
+                    break
+            if length_seconds:
                 break
         if length_seconds:
             break
