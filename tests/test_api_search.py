@@ -519,6 +519,15 @@ class TestTrending:
         data = response.json()
         assert len(data) == 2
 
+    def test_trending_passes_yattee_category_type(self, sample_trending_results):
+        """Test Yattee's trending type query is forwarded to InnerTube."""
+        with patch("routers.search.innertube.get_trending", new_callable=AsyncMock) as mock_it:
+            mock_it.return_value = sample_trending_results
+            response = self.client.get("/api/v1/trending?region=GB&type=Gaming")
+
+        assert response.status_code == 200
+        mock_it.assert_called_once_with("GB", "Gaming")
+
     def test_trending_with_region(self, sample_trending_results):
         """Test trending with region parameter."""
         with self._mock_innertube_trending_fail():

@@ -524,6 +524,18 @@ def grid_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
     published_text = _extract_text(renderer.get("publishedTimeText"))
     view_count_text = _extract_text(renderer.get("viewCountText"))
 
+    channel = renderer.get("ownerText") or renderer.get("longBylineText") or renderer.get("shortBylineText", {})
+    author = _extract_text(channel)
+    author_id = ""
+    author_url = ""
+    if "runs" in channel:
+        for run in channel["runs"]:
+            browse = run.get("navigationEndpoint", {}).get("browseEndpoint", {})
+            if browse.get("browseId"):
+                author_id = browse["browseId"]
+                author_url = f"/channel/{author_id}"
+                break
+
     # Get duration from thumbnail overlay
     length_seconds = 0
     for overlay in renderer.get("thumbnailOverlays", []):
@@ -537,9 +549,9 @@ def grid_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "videoId": video_id,
         "title": title,
         "description": "",
-        "author": "",
-        "authorId": "",
-        "authorUrl": "",
+        "author": author,
+        "authorId": author_id,
+        "authorUrl": author_url,
         "videoThumbnails": thumbnails,
         "lengthSeconds": length_seconds,
         "viewCount": _parse_count_text(view_count_text),

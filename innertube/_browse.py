@@ -26,6 +26,16 @@ CHANNEL_TAB_PARAMS = {
     "playlists": "EglwbGF5bGlzdHPyBgQKAkIA",
 }
 
+# YouTube removed the old aggregated FEtrending page, so requests to
+# browseId=FEtrending now return HTTP 400. Invidious resolved this by using
+# the still-available channel-backed trending shelves (livestreams as default,
+# gaming for the gaming category).
+TRENDING_BROWSE_PARAMS = {
+    "default": ("UC4R8DWoMoI7CAwX8_LjQHig", "EgdsaXZldGFikgEDCKEK"),
+    "livestreams": ("UC4R8DWoMoI7CAwX8_LjQHig", "EgdsaXZldGFikgEDCKEK"),
+    "gaming": ("UCOpNcN46UbXVtpKMrmU4Abg", "Egh0cmVuZGluZw%3D%3D"),
+}
+
 
 def _extract_items_from_tab(data: Dict[str, Any]) -> tuple[List[Dict], Optional[str]]:
     """Extract video/playlist items and continuation from a browse response tab."""
@@ -67,15 +77,15 @@ def _extract_items_from_tab(data: Dict[str, Any]) -> tuple[List[Dict], Optional[
                 section_renderer = section.get("itemSectionRenderer", {})
                 for content in section_renderer.get("contents", []):
                     if "shelfRenderer" in content:
-                        shelf_items = (
-                            content["shelfRenderer"]
-                            .get("content", {})
-                            .get("expandedShelfContentsRenderer", {})
-                            .get("items", [])
-                        )
+                        shelf_content = content["shelfRenderer"].get("content", {})
+                        shelf_items = shelf_content.get("expandedShelfContentsRenderer", {}).get("items", [])
+                        if not shelf_items:
+                            shelf_items = shelf_content.get("gridRenderer", {}).get("items", [])
                         for shelf_item in shelf_items:
                             if "videoRenderer" in shelf_item:
                                 items.append(video_renderer_to_invidious(shelf_item["videoRenderer"]))
+                            elif "gridVideoRenderer" in shelf_item:
+                                items.append(grid_video_to_invidious(shelf_item["gridVideoRenderer"]))
                     elif "videoRenderer" in content:
                         items.append(video_renderer_to_invidious(content["videoRenderer"]))
                     elif "gridVideoRenderer" in content:
@@ -128,7 +138,7 @@ def _extract_items_from_continuation(data: Dict[str, Any]) -> tuple[List[Dict], 
     return items, continuation
 
 
-async def get_trending(region: str = "US") -> List[Dict[str, Any]]:
+async def get_trending(region: str = "US", trending_type: Optional[str] = None) -> List[Dict[str, Any]]:
     """Get trending videos from YouTube.
 
     Args:
@@ -138,13 +148,19 @@ async def get_trending(region: str = "US") -> List[Dict[str, Any]]:
         List of video dicts in Invidious format
     """
     version = await _get_client_version()
+    browse_id, params = TRENDING_BROWSE_PARAMS.get(
+        (trending_type or "default").lower(), TRENDING_BROWSE_PARAMS["default"]
+    )
     body = {
-        "browseId": "FEtrending",
+        "browseId": browse_id,
+        "params": params,
         "context": _build_context(region=region, client_version=version),
     }
     data = await innertube_post("browse", body)
     items, _ = _extract_items_from_tab(data)
-    logger.info(f"[InnerTube] Trending: got {len(items)} videos for region={region}")
+    logger.info(
+        f"[InnerTube] Trending: got {len(items)} videos for region={region}, type={trending_type or 'default'}"
+    )
     return items
 
 

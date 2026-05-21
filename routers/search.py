@@ -127,10 +127,13 @@ async def search_suggestions(q: str = Query(..., description="Search query")):
 
 
 @router.get("/trending", response_model=List[VideoListItem])
-async def trending(region: str = Query("US", description="Region code")):
+async def trending(
+    region: str = Query("US", description="Region code"),
+    type: Optional[str] = Query(None, description="Trending category: Default, Gaming, etc."),
+):
     """Get trending videos. Tries InnerTube first, falls back to Invidious."""
     try:
-        results = await innertube.get_trending(region)
+        results = await innertube.get_trending(region, type)
         if results:
             return [invidious_to_video_list_item(item) for item in results]
     except innertube.InnerTubeError as e:
