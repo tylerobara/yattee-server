@@ -365,7 +365,25 @@ async def _fetch_from_invidious(
             return None, None, True, "invidious_error_414"
 
         # Process Invidious results
-        video_list = result["videos"]
+        raw_video_list = result["videos"]
+
+        # Filter out parse-error entries returned when Invidious can't decode the
+        # YouTube response (e.g., new viewModel keys upstream Invidious doesn't know).
+        # These look like: {"type": "parse-error", "errorMessage": "Missing hash key: ..."}.
+        video_list = [v for v in raw_video_list if v.get("type") != "parse-error" and v.get("videoId")]
+        parse_error_count = len(raw_video_list) - len(video_list)
+        if parse_error_count > 0:
+            sample = next((v for v in raw_video_list if v.get("type") == "parse-error"), None)
+            sample_msg = sample.get("errorMessage", "") if sample else ""
+            logger.warning(
+                f"[Feed] {channel_id}: Invidious returned {parse_error_count} parse-error "
+                f"entr(ies) out of {len(raw_video_list)} (sample: {sample_msg!r})"
+            )
+
+        # If Invidious produced no usable videos, fall back to yt-dlp.
+        if not video_list:
+            return None, None, True, "invidious_parse_errors"
+
         pagination_info = {
             "total_fetched": result.get("total_fetched"),
             "pagination_limited": result.get("pagination_limited", False),

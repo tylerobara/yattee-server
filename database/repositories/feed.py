@@ -100,7 +100,7 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
                     datetime.now(UTC).isoformat(),
                 ),
             )
-            new_count += 1
+            new_count += cursor.rowcount if cursor.rowcount > 0 else 0
 
         conn.commit()
 
