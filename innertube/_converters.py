@@ -474,12 +474,20 @@ def rich_item_to_invidious(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Convert an InnerTube richItemRenderer to Invidious format.
 
     richItemRenderer wraps a videoRenderer (used in trending, channel pages).
+    YouTube has since migrated channel video tabs to lockupViewModel; we
+    delegate to the video-typed lockup converter for those.
     """
     content = item.get("content", {})
     if "videoRenderer" in content:
         return video_renderer_to_invidious(content["videoRenderer"])
     if "reelItemRenderer" in content:
         return _reel_item_to_invidious(content["reelItemRenderer"])
+    if "lockupViewModel" in content:
+        lvm = content["lockupViewModel"]
+        if lvm.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
+            return _lockup_video_view_model_to_invidious(lvm)
+        # Playlist / channel lockups under channel tabs - delegate to general handler
+        return lockup_view_model_to_invidious(lvm)
     return None
 
 
@@ -892,7 +900,11 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
             elif "ago" in text.lower():
                 published_text = text
 
-    # Duration comes from the thumbnail overlay
+    # Duration comes from the thumbnail overlay. Two shapes observed:
+    #   1) thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text
+    #      (sidebar / recommended-video lockups)
+    #   2) thumbnailBottomOverlayViewModel.badges[].thumbnailBadgeViewModel.text
+    #      (channel "Videos" tab lockups)
     length_seconds = 0
     overlays = (
         renderer.get("contentImage", {})
@@ -900,8 +912,18 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
         .get("overlays", [])
     )
     for overlay in overlays:
+        # Shape 1
         badge = overlay.get("thumbnailOverlayBadgeViewModel", {})
         for b in badge.get("thumbnailBadges", []):
+            text = b.get("thumbnailBadgeViewModel", {}).get("text", "")
+            if text and ":" in text:
+                length_seconds = _parse_duration_text(text)
+                break
+        if length_seconds:
+            break
+        # Shape 2
+        bottom = overlay.get("thumbnailBottomOverlayViewModel", {})
+        for b in bottom.get("badges", []):
             text = b.get("thumbnailBadgeViewModel", {}).get("text", "")
             if text and ":" in text:
                 length_seconds = _parse_duration_text(text)
