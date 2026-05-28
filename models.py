@@ -107,6 +107,7 @@ class VideoResponse(BaseModel):
     videoThumbnails: List[Thumbnail] = Field(default_factory=list)
     liveNow: bool = False
     isUpcoming: bool = False
+    isShort: Optional[bool] = None
     premiereTimestamp: Optional[int] = None
     hlsUrl: Optional[str] = None
     dashUrl: Optional[str] = None
@@ -142,6 +143,7 @@ class VideoListItem(BaseModel):
     videoThumbnails: List[Thumbnail] = Field(default_factory=list)
     liveNow: bool = False
     isUpcoming: bool = False
+    isShort: Optional[bool] = None
     extractor: Optional[str] = None  # Site name (Vimeo, Dailymotion, etc.) for external videos
     videoUrl: Optional[str] = None  # Original video URL for external videos (for re-extraction)
 

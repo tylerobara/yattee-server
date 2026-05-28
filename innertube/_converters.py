@@ -192,6 +192,7 @@ def video_renderer_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "publishedText": published_text,
         "liveNow": is_live,
         "isUpcoming": False,
+        "isShort": False,
     }
 
 
@@ -484,6 +485,8 @@ def rich_item_to_invidious(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return video_renderer_to_invidious(content["videoRenderer"])
     if "reelItemRenderer" in content:
         return _reel_item_to_invidious(content["reelItemRenderer"])
+    if "shortsLockupViewModel" in content:
+        return _shorts_lockup_to_invidious(content["shortsLockupViewModel"])
     if "lockupViewModel" in content:
         lvm = content["lockupViewModel"]
         if lvm.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
@@ -492,12 +495,63 @@ def rich_item_to_invidious(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _shorts_lockup_to_invidious(renderer: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert a shortsLockupViewModel (shorts shelf entry) to Invidious shape.
+
+    Shape varies — videoId can live in onTap.innertubeCommand.reelWatchEndpoint
+    or as a suffix on entityId. Return None if neither yields an id.
+    """
+    video_id = ""
+    reel = (
+        renderer.get("onTap", {})
+        .get("innertubeCommand", {})
+        .get("reelWatchEndpoint", {})
+    )
+    if reel.get("videoId"):
+        video_id = reel["videoId"]
+    if not video_id:
+        entity_id = renderer.get("entityId", "")
+        if entity_id and "-" in entity_id:
+            video_id = entity_id.rsplit("-", 1)[-1]
+    if not video_id:
+        return None
+
+    overlay = renderer.get("overlayMetadata", {}) or {}
+    title = overlay.get("primaryText", {}).get("content", "")
+    view_count_text = overlay.get("secondaryText", {}).get("content", "")
+
+    return {
+        "type": "video",
+        "videoId": video_id,
+        "title": title,
+        "description": "",
+        "author": "",
+        "authorId": "",
+        "authorUrl": "",
+        "videoThumbnails": _standard_video_thumbnails(video_id),
+        "lengthSeconds": 0,
+        "viewCount": _parse_count_text(view_count_text),
+        "viewCountText": view_count_text,
+        "published": None,
+        "publishedText": None,
+        "liveNow": False,
+        "isUpcoming": False,
+        "isShort": True,
+    }
+
+
 def _reel_item_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a reelItemRenderer (shorts) to Invidious video format."""
     video_id = renderer.get("videoId", "")
     title = _extract_text(renderer.get("headline"))
     thumbnails = _standard_video_thumbnails(video_id)
     view_count_text = _extract_text(renderer.get("viewCountText"))
+
+    # Reels often omit lengthText, but when present we prefer the real value.
+    length_seconds = _parse_duration_text(_extract_text(renderer.get("lengthText")))
+    if not length_seconds:
+        accessibility = renderer.get("accessibility", {}).get("accessibilityData", {})
+        length_seconds = _parse_accessibility_duration(accessibility.get("label", ""))
 
     return {
         "type": "video",
@@ -508,13 +562,14 @@ def _reel_item_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "authorId": "",
         "authorUrl": "",
         "videoThumbnails": thumbnails,
-        "lengthSeconds": 0,
+        "lengthSeconds": length_seconds,
         "viewCount": _parse_count_text(view_count_text),
         "viewCountText": view_count_text,
         "published": None,
         "publishedText": None,
         "liveNow": False,
         "isUpcoming": False,
+        "isShort": True,
     }
 
 
@@ -565,6 +620,7 @@ def grid_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "publishedText": published_text,
         "liveNow": False,
         "isUpcoming": False,
+        "isShort": False,
     }
 
 
@@ -971,6 +1027,7 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
         "publishedText": published_text or None,
         "liveNow": False,
         "isUpcoming": False,
+        "isShort": False,
     }
 
 
@@ -1011,6 +1068,29 @@ def _compact_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "liveNow": False,
         "isUpcoming": False,
     }
+
+
+def _detect_is_short(player: Dict[str, Any], nxt: Dict[str, Any]) -> Optional[bool]:
+    """Determine if a video is a YouTube Short from already-fetched /player data.
+
+    Returns True/False when a reliable signal is present, None when unknown.
+    No extra network calls — only inspects fields in the dicts we already have.
+
+    Signal: `videoDetails.isShortsEligible` — the field iv-org/invidious settled on
+    in PR #5609 after maintainers rejected length-based heuristics (livestreams
+    also report length=0).
+    """
+    details = player.get("videoDetails", {}) or {}
+    if "isShortsEligible" in details:
+        return bool(details["isShortsEligible"])
+
+    # Diagnostic: we expect this field in WEB-client /player responses. If it's
+    # missing across many videos we need to revisit the field path; for now log
+    # once per video at debug so we don't add noise but can spot a regression.
+    video_id = details.get("videoId", "")
+    if video_id:
+        logger.debug(f"[InnerTube] isShortsEligible missing from /player videoDetails for {video_id}")
+    return None
 
 
 def innertube_player_to_invidious_video(
@@ -1078,6 +1158,7 @@ def innertube_player_to_invidious_video(
         "videoThumbnails": _standard_video_thumbnails(video_id),
         "liveNow": bool(details.get("isLive", False)),
         "isUpcoming": bool(details.get("isUpcoming", False)),
+        "isShort": _detect_is_short(player, nxt),
         "hlsUrl": streaming.get("hlsManifestUrl"),
         "dashUrl": streaming.get("dashManifestUrl"),
         "formatStreams": format_streams,
