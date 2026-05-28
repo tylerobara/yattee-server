@@ -85,16 +85,16 @@ def test_video_renderer_is_not_short():
 
 
 def test_detect_is_short_reads_is_shorts_eligible():
-    player = {"videoDetails": {"videoId": "TGtzINFzY2Q", "isShortsEligible": True}}
+    player = {"microformat": {"playerMicroformatRenderer": {"isShortsEligible": True}}}
     assert _detect_is_short(player, {}) is True
 
-    player = {"videoDetails": {"videoId": "eLP3ag0YpyA", "isShortsEligible": False}}
+    player = {"microformat": {"playerMicroformatRenderer": {"isShortsEligible": False}}}
     assert _detect_is_short(player, {}) is False
 
 
 def test_detect_is_short_returns_none_when_field_absent():
     """Unknown is the honest answer when the signal is missing — no length-based guess."""
-    player = {"videoDetails": {"videoId": "abcdefghijk"}}
+    player = {"microformat": {"playerMicroformatRenderer": {}}}
     assert _detect_is_short(player, {}) is None
 
 
@@ -106,8 +106,8 @@ def test_player_response_propagates_is_short():
             "author": "A",
             "channelId": "UC123",
             "lengthSeconds": "30",
-            "isShortsEligible": True,
-        }
+        },
+        "microformat": {"playerMicroformatRenderer": {"isShortsEligible": True}},
     }
     converted = innertube_player_to_invidious_video(player)
     assert converted["isShort"] is True

@@ -1073,23 +1073,16 @@ def _compact_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
 def _detect_is_short(player: Dict[str, Any], nxt: Dict[str, Any]) -> Optional[bool]:
     """Determine if a video is a YouTube Short from already-fetched /player data.
 
-    Returns True/False when a reliable signal is present, None when unknown.
+    Returns True/False when the reliable signal is present, None when unknown.
     No extra network calls — only inspects fields in the dicts we already have.
 
-    Signal: `videoDetails.isShortsEligible` — the field iv-org/invidious settled on
-    in PR #5609 after maintainers rejected length-based heuristics (livestreams
-    also report length=0).
+    Signal: `microformat.playerMicroformatRenderer.isShortsEligible`. This is
+    the field iv-org/invidious settled on in PR #5609 after maintainers
+    rejected length-based heuristics (livestreams also report length=0).
     """
-    details = player.get("videoDetails", {}) or {}
-    if "isShortsEligible" in details:
-        return bool(details["isShortsEligible"])
-
-    # Diagnostic: we expect this field in WEB-client /player responses. If it's
-    # missing across many videos we need to revisit the field path; for now log
-    # once per video at debug so we don't add noise but can spot a regression.
-    video_id = details.get("videoId", "")
-    if video_id:
-        logger.debug(f"[InnerTube] isShortsEligible missing from /player videoDetails for {video_id}")
+    microformat = player.get("microformat", {}).get("playerMicroformatRenderer", {}) or {}
+    if "isShortsEligible" in microformat:
+        return bool(microformat["isShortsEligible"])
     return None
 
 
