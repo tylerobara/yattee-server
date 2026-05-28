@@ -360,6 +360,9 @@ def _enrich_with_innertube_next(response: VideoResponse, it_video: dict) -> None
         if converted:
             response.recommendedVideos = converted
 
+    if response.isShort is None and it_video.get("isShort") is not None:
+        response.isShort = it_video["isShort"]
+
 
 @router.get("/extract", response_model=VideoResponse)
 async def extract_video_url(
