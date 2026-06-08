@@ -473,13 +473,22 @@ def channel_renderer_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
 def rich_item_to_invidious(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Convert an InnerTube richItemRenderer to Invidious format.
 
-    richItemRenderer wraps a videoRenderer (used in trending, channel pages).
+    richItemRenderer wraps the actual item used in rich grids. YouTube channel
+    video tabs historically used videoRenderer here, but current WEB responses
+    use lockupViewModel. Video-typed lockups go through the dedicated video
+    converter; playlist/channel-typed lockups fall through to the general
+    lockup handler so rich grids that mix content types still produce items.
     """
     content = item.get("content", {})
     if "videoRenderer" in content:
         return video_renderer_to_invidious(content["videoRenderer"])
     if "reelItemRenderer" in content:
         return _reel_item_to_invidious(content["reelItemRenderer"])
+    if "lockupViewModel" in content:
+        lvm = content["lockupViewModel"]
+        if lvm.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
+            return _lockup_video_view_model_to_invidious(lvm)
+        return lockup_view_model_to_invidious(lvm)
     return None
 
 
@@ -520,6 +529,18 @@ def grid_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
     published_text = _extract_text(renderer.get("publishedTimeText"))
     view_count_text = _extract_text(renderer.get("viewCountText"))
 
+    channel = renderer.get("ownerText") or renderer.get("longBylineText") or renderer.get("shortBylineText", {})
+    author = _extract_text(channel)
+    author_id = ""
+    author_url = ""
+    if "runs" in channel:
+        for run in channel["runs"]:
+            browse = run.get("navigationEndpoint", {}).get("browseEndpoint", {})
+            if browse.get("browseId"):
+                author_id = browse["browseId"]
+                author_url = f"/channel/{author_id}"
+                break
+
     # Get duration from thumbnail overlay
     length_seconds = 0
     for overlay in renderer.get("thumbnailOverlays", []):
@@ -533,9 +554,9 @@ def grid_video_to_invidious(renderer: Dict[str, Any]) -> Dict[str, Any]:
         "videoId": video_id,
         "title": title,
         "description": "",
-        "author": "",
-        "authorId": "",
-        "authorUrl": "",
+        "author": author,
+        "authorId": author_id,
+        "authorUrl": author_url,
         "videoThumbnails": thumbnails,
         "lengthSeconds": length_seconds,
         "viewCount": _parse_count_text(view_count_text),
@@ -892,7 +913,11 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
             elif "ago" in text.lower():
                 published_text = text
 
-    # Duration comes from the thumbnail overlay
+    # Duration comes from the thumbnail overlay. Two shapes observed:
+    #   1) thumbnailOverlayBadgeViewModel.thumbnailBadges[].thumbnailBadgeViewModel.text
+    #      (sidebar / recommended-video lockups)
+    #   2) thumbnailBottomOverlayViewModel.badges[].thumbnailBadgeViewModel.text
+    #      (channel "Videos" tab lockups)
     length_seconds = 0
     overlays = (
         renderer.get("contentImage", {})
@@ -900,11 +925,32 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
         .get("overlays", [])
     )
     for overlay in overlays:
-        badge = overlay.get("thumbnailOverlayBadgeViewModel", {})
-        for b in badge.get("thumbnailBadges", []):
-            text = b.get("thumbnailBadgeViewModel", {}).get("text", "")
-            if text and ":" in text:
-                length_seconds = _parse_duration_text(text)
+        badge_sources = []
+        direct_badge = overlay.get("thumbnailOverlayBadgeViewModel")
+        if direct_badge:
+            badge_sources.append(direct_badge)
+
+        # Current channel-video lockups wrap duration badges in
+        # thumbnailBottomOverlayViewModel.badges[].thumbnailBadgeViewModel.
+        bottom_overlay = overlay.get("thumbnailBottomOverlayViewModel", {})
+        for badge in bottom_overlay.get("badges", []):
+            nested_badge = badge.get("thumbnailBadgeViewModel")
+            if nested_badge:
+                badge_sources.append(nested_badge)
+
+        for badge in badge_sources:
+            # Older thumbnailOverlayBadgeViewModel shapes store a list under
+            # thumbnailBadges; newer nested thumbnailBadgeViewModel stores text directly.
+            badge_texts = [badge.get("text", "")]
+            badge_texts.extend(
+                b.get("thumbnailBadgeViewModel", {}).get("text", "")
+                for b in badge.get("thumbnailBadges", [])
+            )
+            for text in badge_texts:
+                if text and ":" in text:
+                    length_seconds = _parse_duration_text(text)
+                    break
+            if length_seconds:
                 break
         if length_seconds:
             break

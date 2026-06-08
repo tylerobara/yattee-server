@@ -42,6 +42,8 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
         seen_video_ids = set()
         unique_videos = []
         duplicate_count = 0
+        empty_id_count = 0
+        first_empty_sample: Optional[Dict[str, Any]] = None
         for video in videos:
             video_id = video.get("video_id", "")
             if video_id and video_id not in seen_video_ids:
@@ -49,9 +51,24 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
                 unique_videos.append(video)
             elif video_id:
                 duplicate_count += 1
+            else:
+                if first_empty_sample is None:
+                    first_empty_sample = video
+                empty_id_count += 1
 
         if duplicate_count > 0:
             logger.warning(f"Filtered {duplicate_count} duplicate video(s) for {channel_id} ({site})")
+
+        if empty_id_count > 0:
+            sample_type = first_empty_sample.get("type") if first_empty_sample else None
+            sample_keys = list(first_empty_sample.keys()) if first_empty_sample else []
+            sample_title = first_empty_sample.get("title") if first_empty_sample else None
+            sample_author = first_empty_sample.get("author") if first_empty_sample else None
+            logger.warning(
+                f"upsert_cached_videos: dropped {empty_id_count} entr(ies) with empty video_id "
+                f"for {channel_id} ({site}); first sample: type={sample_type!r} "
+                f"title={sample_title!r} author={sample_author!r} keys={sample_keys}"
+            )
 
         # Insert all unique videos
         new_count = 0
@@ -84,7 +101,7 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
                     datetime.now(UTC).isoformat(),
                 ),
             )
-            new_count += 1
+            new_count += cursor.rowcount if cursor.rowcount > 0 else 0
 
         conn.commit()
 
@@ -97,6 +114,12 @@ def upsert_cached_videos(channel_id: str, site: str, videos: List[Dict[str, Any]
             )
         else:
             logger.info(f"Cached {new_count} videos for new channel {channel_id} ({site})")
+
+        if new_count == 0 and len(videos) > 0:
+            logger.error(
+                f"upsert_cached_videos: cached 0 of {len(videos)} videos for {channel_id} ({site}) "
+                f"(unique={len(unique_videos)}, duplicates={duplicate_count}, empty_id={empty_id_count})"
+            )
 
 
 def cleanup_old_cached_videos(days: int = 30):

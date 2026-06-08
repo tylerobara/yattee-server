@@ -365,7 +365,30 @@ async def _fetch_from_invidious(
             return None, None, True, "invidious_error_414"
 
         # Process Invidious results
-        video_list = result["videos"]
+        raw_video_list = result["videos"]
+
+        # Filter out entries Invidious can't represent as a video. Two known modes:
+        #   - parse-error placeholders: {"type": "parse-error", "errorMessage": "..."}
+        #   - mis-extracted entries with no videoId (e.g. type="playlist" wrapping
+        #     a single video when Invidious can't decode the channel-videos renderer)
+        video_list = [v for v in raw_video_list if v.get("type") != "parse-error" and v.get("videoId")]
+        dropped = len(raw_video_list) - len(video_list)
+        if dropped > 0:
+            parse_errors = [v for v in raw_video_list if v.get("type") == "parse-error"]
+            no_video_id = [v for v in raw_video_list if v.get("type") != "parse-error" and not v.get("videoId")]
+            sample_type = no_video_id[0].get("type") if no_video_id else None
+            sample_msg = parse_errors[0].get("errorMessage", "") if parse_errors else ""
+            logger.warning(
+                f"[Feed] {channel_id}: Invidious returned {dropped} unusable entr(ies) "
+                f"out of {len(raw_video_list)} "
+                f"(parse_errors={len(parse_errors)}, no_video_id={len(no_video_id)}, "
+                f"sample_type={sample_type!r}, sample_error={sample_msg!r})"
+            )
+
+        # If Invidious produced no usable videos, fall back to yt-dlp.
+        if not video_list:
+            return None, None, True, "invidious_unusable_entries"
+
         pagination_info = {
             "total_fetched": result.get("total_fetched"),
             "pagination_limited": result.get("pagination_limited", False),
