@@ -639,6 +639,86 @@ class TestGetPlaylistUnit:
         assert result["videos"][1]["lengthSeconds"] == 55  # 0:55
 
     @pytest.mark.asyncio
+    async def test_get_playlist_follows_nested_token_not_sibling(self):
+        """Regression: a >100-video playlist emits two tokens.
+
+        The next-page token nested inside the video itemSectionRenderer is authoritative;
+        a sibling-section continuationItemViewModel carries a dead-end token. The loop must
+        follow the nested chain and never the sibling, otherwise pagination halts at 100.
+        """
+        from innertube import _playlists
+
+        NESTED_1 = "NESTED_PAGE_2"
+        NESTED_2 = "NESTED_PAGE_3"
+        SIBLING = "SIBLING_DEAD_END"
+
+        # First browse: itemSection with 2 lockups + nested token, plus a sibling section.
+        first_page = {
+            "header": {"playlistHeaderRenderer": {"title": {"simpleText": "Big PL"}}},
+            "contents": {
+                "twoColumnBrowseResultsRenderer": {
+                    "tabs": [
+                        {
+                            "tabRenderer": {
+                                "content": {
+                                    "sectionListRenderer": {
+                                        "contents": [
+                                            {
+                                                "itemSectionRenderer": {
+                                                    "contents": [
+                                                        _lockup_video_entry("pg1vid0001a", "P1 A"),
+                                                        _lockup_video_entry("pg1vid0002b", "P1 B"),
+                                                        _continuation_vm_entry(NESTED_1),
+                                                    ]
+                                                }
+                                            },
+                                            _continuation_vm_entry(SIBLING),
+                                        ]
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+
+        def _cont_page(videos, token):
+            items = list(videos)
+            if token:
+                items.append(_continuation_vm_entry(token))
+            return {"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": items}}]}
+
+        requested_tokens = []
+
+        async def fake_post(endpoint, body, use_cookies=True):
+            token = body.get("continuation")
+            if token is None:
+                return first_page
+            requested_tokens.append(token)
+            if token == NESTED_1:
+                return _cont_page([_lockup_video_entry("pg2vid0001a", "P2 A")], NESTED_2)
+            if token == NESTED_2:
+                return _cont_page([_lockup_video_entry("pg3vid0001a", "P3 A")], None)
+            # Sibling/dead-end token: return a bare itemSectionRenderer (no videos).
+            return {"onResponseReceivedActions": [{"appendContinuationItemsAction": {"continuationItems": [
+                {"itemSectionRenderer": {"contents": []}}
+            ]}}]}
+
+        with patch("innertube._playlists.innertube_post", side_effect=fake_post):
+            result = await _playlists.get_playlist("PLbig")
+
+        assert result is not None
+        # 2 (first page) + 1 (page 2) + 1 (page 3) = 4 videos across the nested chain.
+        assert len(result["videos"]) == 4
+        assert [v["videoId"] for v in result["videos"]] == [
+            "pg1vid0001a", "pg1vid0002b", "pg2vid0001a", "pg3vid0001a"
+        ]
+        # The dead-end sibling token must never have been requested.
+        assert SIBLING not in requested_tokens
+        assert requested_tokens == [NESTED_1, NESTED_2]
+
+    @pytest.mark.asyncio
     async def test_get_playlist_pagination_stops_at_cap(self):
         """An infinite continuation loop must terminate at _MAX_PAGES."""
         from innertube import _playlists

@@ -201,7 +201,13 @@ def _extract_playlist_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]]
     Handles two response shapes:
       - Legacy: itemSectionRenderer.contents[].playlistVideoListRenderer.contents[]
       - Current: itemSectionRenderer.contents[].lockupViewModel (bare video lockups),
-        with the continuation token in a sibling continuationItemViewModel section.
+        with the next-page continuationItemViewModel nested as the last item.
+
+    Some playlists also emit a SECOND continuationItemViewModel as a top-level sibling
+    section. That sibling is a dead-end token (following it returns a bare
+    itemSectionRenderer with no videos), so the token nested inside the video
+    itemSectionRenderer is authoritative — the sibling is used only as a fallback for
+    playlists that have no nested token.
     """
     tabs = data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
     if not tabs:
@@ -213,10 +219,12 @@ def _extract_playlist_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]]
         return [], None
 
     entries: List[Dict[str, Any]] = []
+    sibling_token: Optional[str] = None
     for section in section_list.get("contents", []):
-        # New shape: continuation lives in a top-level sibling section.
+        # Top-level sibling continuation — fallback only; don't let it clobber the
+        # authoritative token nested in the video itemSectionRenderer.
         if "continuationItemViewModel" in section:
-            entries.append(section)
+            sibling_token = _extract_continuation_token_vm(section["continuationItemViewModel"]) or sibling_token
             continue
         item_section = section.get("itemSectionRenderer", {})
         for content in item_section.get("contents", []):
@@ -225,10 +233,12 @@ def _extract_playlist_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]]
                 # Legacy nested list — parse its contents directly.
                 entries.extend(pvlr.get("contents", []))
             else:
-                # Current shape: bare lockupViewModel / continuationItemRenderer entries.
+                # Current shape: bare lockupViewModel / continuationItem* entries
+                # (incl. the nested next-page continuationItemViewModel).
                 entries.append(content)
 
-    return _parse_playlist_entries(entries)
+    videos, continuation = _parse_playlist_entries(entries)
+    return videos, continuation or sibling_token
 
 
 def _extract_continuation_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
