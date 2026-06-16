@@ -44,6 +44,69 @@ def _continuation_entry(token: str) -> dict:
     }
 
 
+def _lockup_video_entry(video_id: str, title: str, duration_text: str = "1:30") -> dict:
+    """Build a minimal VIDEO-typed lockupViewModel entry (current YouTube shape)."""
+    return {
+        "lockupViewModel": {
+            "contentType": "LOCKUP_CONTENT_TYPE_VIDEO",
+            "contentId": video_id,
+            "metadata": {
+                "lockupMetadataViewModel": {
+                    "title": {"content": title},
+                    "metadata": {
+                        "contentMetadataViewModel": {
+                            "metadataRows": [
+                                {
+                                    "metadataParts": [
+                                        {
+                                            "text": {
+                                                "content": "Lockup Channel",
+                                                "commandRuns": [
+                                                    {
+                                                        "onTap": {
+                                                            "innertubeCommand": {
+                                                                "browseEndpoint": {
+                                                                    "browseId": "UClockupchannel000000",
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                ],
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                }
+            },
+            "contentImage": {
+                "thumbnailViewModel": {
+                    "overlays": [
+                        {
+                            "thumbnailBottomOverlayViewModel": {
+                                "badges": [{"thumbnailBadgeViewModel": {"text": duration_text}}]
+                            }
+                        }
+                    ]
+                }
+            },
+        }
+    }
+
+
+def _continuation_vm_entry(token: str) -> dict:
+    """Build the current continuationItemViewModel shape (sibling section token)."""
+    return {
+        "continuationItemViewModel": {
+            "continuationCommand": {
+                "innertubeCommand": {"continuationCommand": {"token": token}}
+            }
+        }
+    }
+
+
 @pytest.fixture
 def innertube_playlist_response():
     """Legacy playlistHeaderRenderer shape with 3 videos and a continuation."""
@@ -216,6 +279,57 @@ def innertube_empty_playlist_response():
                                                 "contents": [{"playlistVideoListRenderer": {"contents": []}}]
                                             }
                                         }
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                ]
+            }
+        },
+    }
+
+
+@pytest.fixture
+def innertube_playlist_lockup_response():
+    """Current YouTube shape: bare lockupViewModel videos directly in itemSectionRenderer.
+
+    Regression fixture for issue #6 — YouTube removed playlistVideoListRenderer and now
+    renders playlist videos as VIDEO-typed lockupViewModel entries, with the next-page
+    token in a sibling continuationItemViewModel section.
+    """
+    return {
+        "header": {
+            "playlistHeaderRenderer": {
+                "title": {"simpleText": "Lockup Playlist"},
+                "ownerText": {
+                    "runs": [
+                        {
+                            "text": "Lockup Owner",
+                            "navigationEndpoint": {"browseEndpoint": {"browseId": "UClockupowner00000000"}},
+                        }
+                    ]
+                },
+                "numVideosText": {"simpleText": "2 videos"},
+            }
+        },
+        "contents": {
+            "twoColumnBrowseResultsRenderer": {
+                "tabs": [
+                    {
+                        "tabRenderer": {
+                            "content": {
+                                "sectionListRenderer": {
+                                    "contents": [
+                                        {
+                                            "itemSectionRenderer": {
+                                                "contents": [
+                                                    _lockup_video_entry("lockvid001a", "Lock Alpha", "2:03"),
+                                                    _lockup_video_entry("lockvid002b", "Lock Beta", "0:55"),
+                                                ]
+                                            }
+                                        },
+                                        _continuation_vm_entry("LOCKUP_NEXT_PAGE"),
                                     ]
                                 }
                             }
@@ -501,6 +615,28 @@ class TestGetPlaylistUnit:
         assert len(result["videos"]) == 3
         assert result["videos"][0]["videoId"] == "vid0000001a"
         assert result["videos"][0]["lengthSeconds"] == 100
+
+    @pytest.mark.asyncio
+    async def test_get_playlist_parses_lockup_shape(self, innertube_playlist_lockup_response):
+        """Regression for issue #6: videos arrive as bare VIDEO lockupViewModel entries."""
+        from innertube._playlists import get_playlist
+
+        # Empty continuation page so we stop after the first page.
+        with patch(
+            "innertube._playlists.innertube_post",
+            AsyncMock(side_effect=[innertube_playlist_lockup_response, {"onResponseReceivedActions": []}]),
+        ):
+            result = await get_playlist("PLlockup")
+
+        assert result is not None
+        assert result["title"] == "Lockup Playlist"
+        assert len(result["videos"]) == 2
+        assert result["videos"][0]["videoId"] == "lockvid001a"
+        assert result["videos"][0]["title"] == "Lock Alpha"
+        assert result["videos"][0]["lengthSeconds"] == 123  # 2:03
+        assert result["videos"][0]["author"] == "Lockup Channel"
+        assert result["videos"][1]["videoId"] == "lockvid002b"
+        assert result["videos"][1]["lengthSeconds"] == 55  # 0:55
 
     @pytest.mark.asyncio
     async def test_get_playlist_pagination_stops_at_cap(self):
