@@ -311,6 +311,7 @@ def invidious_to_video_response(
         videoThumbnails=video_thumbnails,
         liveNow=info.get("liveNow", False),
         isUpcoming=info.get("isUpcoming", False),
+        isShort=info.get("isShort"),
         premiereTimestamp=info.get("premiereTimestamp"),
         hlsUrl=hls_url,
         dashUrl=dash_url,
@@ -383,6 +384,7 @@ def invidious_to_video_list_item(info: dict, invidious_base_url: str = "") -> Vi
         videoThumbnails=thumbnails,
         liveNow=info.get("liveNow", False),
         isUpcoming=info.get("isUpcoming", False),
+        isShort=info.get("isShort"),
     )
 
 

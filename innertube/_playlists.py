@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Optional
 from innertube._client import InnerTubeError, innertube_post
 from innertube._converters import (
     _extract_text,
+    _lockup_video_view_model_to_invidious,
     _parse_count_text,
     lockup_view_model_to_invidious,
     playlist_video_renderer_to_invidious,
@@ -195,7 +196,19 @@ def _author_from_metadata_rows(rows: List[Dict[str, Any]]) -> tuple[str, str]:
 
 
 def _extract_playlist_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
-    """Extract videos and next continuation token from the initial browse response."""
+    """Extract videos and next continuation token from the initial browse response.
+
+    Handles two response shapes:
+      - Legacy: itemSectionRenderer.contents[].playlistVideoListRenderer.contents[]
+      - Current: itemSectionRenderer.contents[].lockupViewModel (bare video lockups),
+        with the next-page continuationItemViewModel nested as the last item.
+
+    Some playlists also emit a SECOND continuationItemViewModel as a top-level sibling
+    section. That sibling is a dead-end token (following it returns a bare
+    itemSectionRenderer with no videos), so the token nested inside the video
+    itemSectionRenderer is authoritative — the sibling is used only as a fallback for
+    playlists that have no nested token.
+    """
     tabs = data.get("contents", {}).get("twoColumnBrowseResultsRenderer", {}).get("tabs", [])
     if not tabs:
         return [], None
@@ -205,13 +218,27 @@ def _extract_playlist_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]]
     if not section_list:
         return [], None
 
+    entries: List[Dict[str, Any]] = []
+    sibling_token: Optional[str] = None
     for section in section_list.get("contents", []):
+        # Top-level sibling continuation — fallback only; don't let it clobber the
+        # authoritative token nested in the video itemSectionRenderer.
+        if "continuationItemViewModel" in section:
+            sibling_token = _extract_continuation_token_vm(section["continuationItemViewModel"]) or sibling_token
+            continue
         item_section = section.get("itemSectionRenderer", {})
         for content in item_section.get("contents", []):
             pvlr = content.get("playlistVideoListRenderer")
             if pvlr:
-                return _parse_playlist_entries(pvlr.get("contents", []))
-    return [], None
+                # Legacy nested list — parse its contents directly.
+                entries.extend(pvlr.get("contents", []))
+            else:
+                # Current shape: bare lockupViewModel / continuationItem* entries
+                # (incl. the nested next-page continuationItemViewModel).
+                entries.append(content)
+
+    videos, continuation = _parse_playlist_entries(entries)
+    return videos, continuation or sibling_token
 
 
 def _extract_continuation_videos(data: Dict[str, Any]) -> tuple[List[Dict[str, Any]], Optional[str]]:
@@ -243,6 +270,19 @@ def _extract_continuation_token(cir: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _extract_continuation_token_vm(civm: Dict[str, Any]) -> Optional[str]:
+    """Extract a continuation token from the newer continuationItemViewModel shape.
+
+    Path: continuationCommand.innertubeCommand.continuationCommand.token
+    """
+    return (
+        civm.get("continuationCommand", {})
+        .get("innertubeCommand", {})
+        .get("continuationCommand", {})
+        .get("token")
+    )
+
+
 def _parse_playlist_entries(entries: List[Dict[str, Any]]) -> tuple[List[Dict[str, Any]], Optional[str]]:
     """Parse a list of playlistVideoListRenderer contents into video dicts + continuation."""
     videos: List[Dict[str, Any]] = []
@@ -255,12 +295,23 @@ def _parse_playlist_entries(entries: List[Dict[str, Any]]) -> tuple[List[Dict[st
                 if video.get("videoId"):
                     videos.append(video)
             elif "lockupViewModel" in entry:
-                converted = lockup_view_model_to_invidious(entry["lockupViewModel"])
-                if converted and converted.get("type") == "video":
+                lvm = entry["lockupViewModel"]
+                # YouTube now renders playlist videos as VIDEO-typed lockups. The
+                # generic lockup converter only handles playlist/channel lockups
+                # (returns None for video), so route video lockups explicitly.
+                if lvm.get("contentType") == "LOCKUP_CONTENT_TYPE_VIDEO":
+                    converted = _lockup_video_view_model_to_invidious(lvm)
+                else:
+                    converted = lockup_view_model_to_invidious(lvm)
+                if converted and converted.get("type") == "video" and converted.get("videoId"):
                     converted.setdefault("lengthSeconds", 0)
                     videos.append(converted)
             elif "continuationItemRenderer" in entry:
                 token = _extract_continuation_token(entry["continuationItemRenderer"])
+                if token:
+                    continuation = token
+            elif "continuationItemViewModel" in entry:
+                token = _extract_continuation_token_vm(entry["continuationItemViewModel"])
                 if token:
                     continuation = token
         except (KeyError, TypeError, IndexError) as e:

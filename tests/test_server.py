@@ -90,7 +90,8 @@ class TestInfoEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert "version" in data
-        assert data["version"] == "1.0.2"
+        with open("VERSION") as f:
+            assert data["version"] == f.read().strip()
 
     def test_info_returns_dependencies(self):
         """Test /info returns dependencies section."""
