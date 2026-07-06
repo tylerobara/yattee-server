@@ -265,7 +265,9 @@ async def _get_video_hybrid(
     if it_video is None or it_video.get("liveNow", False):
         if it_error is None and it_video is None:
             logger.debug(f"[Videos] InnerTube disabled; using yt-dlp for {video_id}")
-        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id)
+        response = ytdlp_to_video_response(
+            info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id
+        )
         response.extractionMethod = "ytdlp"
         channel_id = info.get("channel_id")
         if channel_id:
@@ -292,7 +294,9 @@ async def _get_video_hybrid(
         logger.info(
             f"[Videos] InnerTube /player had no matching itags for {video_id}; enriching yt-dlp response from /next"
         )
-        response = ytdlp_to_video_response(info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id)
+        response = ytdlp_to_video_response(
+            info, base_url, proxy_streams=proxy_streams, proxy_mode=proxy_mode, user_id=user_id
+        )
         _enrich_with_innertube_next(response, it_video)
         response.extractionMethod = "hybrid"
         channel_id = info.get("channel_id") or it_video.get("authorId")
