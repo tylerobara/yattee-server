@@ -158,7 +158,8 @@ def _rewrite_hls(body: str, base_url: str, manifest_url: str, ttl_seconds: int) 
             # ...except for tag lines that embed a URI="..." attribute.
             if "URI=" in stripped:
                 def _sub(match):
-                    return f'{match.group(1)}{signed_relay_url(base_url, absolutize(match.group(2)), ttl_seconds=ttl_seconds)}{match.group(3)}'
+                    signed = signed_relay_url(base_url, absolutize(match.group(2)), ttl_seconds=ttl_seconds)
+                    return f"{match.group(1)}{signed}{match.group(3)}"
                 line = _HLS_URI_ATTR_RE.sub(_sub, line)
             out_lines.append(line)
             continue
