@@ -47,6 +47,12 @@ YT_EGRESS_PROXY = os.getenv("YT_EGRESS_PROXY") or None
 # Seeds the yt_ip_family setting on startup (see env_provisioning.py).
 YT_IP_FAMILY = os.getenv("YT_IP_FAMILY") or None
 
+# PO token provider (bgutil): "true"/"false" seeds the yt_pot_enabled setting
+# on startup; YT_POT_PROVIDER_URL points at an external provider instead of
+# the bundled one (see env_provisioning.py).
+YT_POT_ENABLED = os.getenv("YT_POT_ENABLED") or None
+YT_POT_PROVIDER_URL = os.getenv("YT_POT_PROVIDER_URL") or None
+
 # Additional CIDR ranges to permit through the SSRF guard.
 # Comma-separated list of IPv4/IPv6 networks in CIDR notation, e.g.
 # "10.20.30.0/24,fd00::/8" — useful when a backing service (Invidious /

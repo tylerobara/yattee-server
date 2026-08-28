@@ -12,6 +12,7 @@ from ytdlp_wrapper._core import (
     _separate_flags_and_urls,
     run_ytdlp,
     ytdlp_network_args,
+    ytdlp_pot_args,
 )
 from ytdlp_wrapper._extract import extract_channel_url, extract_url
 from ytdlp_wrapper._sanitize import (
@@ -56,6 +57,7 @@ __all__ = [
     "_separate_flags_and_urls",
     "run_ytdlp",
     "ytdlp_network_args",
+    "ytdlp_pot_args",
     # _youtube
     "build_search_sp",
     "get_video_info",

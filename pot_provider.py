@@ -1,0 +1,186 @@
+"""Manages the bundled bgutil POT provider Node process.
+
+The provider server is baked into the Docker image at /opt/bgutil-pot-provider
+(see Dockerfile pot-builder stage). When yt_pot_enabled is on and no external
+provider URL is configured, this module spawns and supervises the Node process
+so yt-dlp's bgutil plugin can fetch PO tokens from http://127.0.0.1:4416.
+
+Token minting egress: the plugin forwards yt-dlp's --proxy in the /get_pot
+request body, so the provider's outbound Google requests use the same egress
+as yt-dlp itself — no proxy plumbing needed here.
+"""
+
+import asyncio
+import logging
+import os
+from pathlib import Path
+from typing import Optional
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+BUNDLE_DIR = Path(os.getenv("POT_PROVIDER_DIR", "/opt/bgutil-pot-provider"))
+NODE_BIN = BUNDLE_DIR / "bin" / "node"
+MAIN_JS = BUNDLE_DIR / "build" / "main.js"
+POT_PORT = 4416
+DEFAULT_BASE_URL = f"http://127.0.0.1:{POT_PORT}"
+
+_TERMINATE_GRACE = 5
+_READY_ATTEMPTS = 15
+_MAX_BACKOFF = 60
+
+
+def bundle_available() -> bool:
+    """True when the bundled provider (node binary + built server) is present."""
+    return NODE_BIN.is_file() and MAIN_JS.is_file()
+
+
+async def _ping(timeout: float = 2.0) -> bool:
+    # trust_env=False: HTTP(S)_PROXY env must never intercept the localhost ping
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=timeout) as client:
+            response = await client.get(f"{DEFAULT_BASE_URL}/ping")
+            return response.status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
+class PotProviderManager:
+    """Supervises the bundled POT provider subprocess."""
+
+    def __init__(self):
+        self._proc: Optional[asyncio.subprocess.Process] = None
+        self._task: Optional[asyncio.Task] = None
+        self._healthy = False
+        self._stopping = False
+        self._external_process = False
+
+    def is_healthy(self) -> bool:
+        return self._healthy
+
+    def status(self) -> dict:
+        from settings import get_settings
+
+        s = get_settings()
+        if not s.yt_pot_enabled:
+            mode = "off"
+        elif s.effective_pot_provider_url():
+            mode = "external"
+        else:
+            mode = "bundled"
+        return {
+            "mode": mode,
+            "bundle_available": bundle_available(),
+            "running": self._proc is not None and self._proc.returncode is None,
+            "healthy": self._healthy if mode == "bundled" else None,
+            "base_url": s.effective_pot_provider_url() or (DEFAULT_BASE_URL if mode == "bundled" else None),
+        }
+
+    async def apply_settings(self, s) -> None:
+        """Start or stop the bundled provider to match settings.
+
+        Called at startup and whenever POT settings change via the admin API.
+        """
+        want = s.yt_pot_enabled and not s.effective_pot_provider_url() and bundle_available()
+        if want and self._task is None:
+            await self.start()
+        elif not want and self._task is not None:
+            await self.stop()
+        elif s.yt_pot_enabled and not s.effective_pot_provider_url() and not bundle_available():
+            logger.warning(
+                "POT provider enabled but bundle not found at %s "
+                "(image built with POT_PROVIDER=none?) — PO tokens disabled",
+                BUNDLE_DIR,
+            )
+        elif s.yt_pot_enabled and s.effective_pot_provider_url():
+            logger.info("POT provider: using external provider at %s", s.effective_pot_provider_url())
+
+    async def start(self) -> None:
+        self._stopping = False
+        self._task = asyncio.create_task(self._supervise())
+
+    async def stop(self) -> None:
+        self._stopping = True
+        self._healthy = False
+        task, self._task = self._task, None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+        proc, self._proc = self._proc, None
+        if proc is not None and proc.returncode is None:
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_GRACE)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+        self._external_process = False
+
+    async def _supervise(self) -> None:
+        backoff = 1
+        while not self._stopping:
+            # Port already answering means another process (or worker) owns the
+            # provider — don't spawn a competing one, just use it.
+            if await _ping():
+                if not self._external_process:
+                    logger.info("POT provider already running at %s; not spawning", DEFAULT_BASE_URL)
+                self._external_process = True
+                self._healthy = True
+                await asyncio.sleep(30)
+                continue
+            self._external_process = False
+            try:
+                self._proc = await asyncio.create_subprocess_exec(
+                    str(NODE_BIN),
+                    str(MAIN_JS),
+                    "--port",
+                    str(POT_PORT),
+                    cwd=str(BUNDLE_DIR),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
+                )
+            except OSError as e:
+                logger.error("POT provider spawn failed: %s", e)
+            else:
+                pump = asyncio.create_task(self._pump_logs(self._proc))
+                if await self._wait_ready(self._proc):
+                    self._healthy = True
+                    backoff = 1
+                    logger.info("POT provider ready at %s", DEFAULT_BASE_URL)
+                await self._proc.wait()
+                pump.cancel()
+                self._healthy = False
+                if self._stopping:
+                    return
+                logger.warning(
+                    "POT provider exited rc=%s; restarting in %ss",
+                    self._proc.returncode,
+                    backoff,
+                )
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, _MAX_BACKOFF)
+
+    async def _wait_ready(self, proc: asyncio.subprocess.Process) -> bool:
+        for _ in range(_READY_ATTEMPTS):
+            if proc.returncode is not None:
+                return False
+            if await _ping():
+                return True
+            await asyncio.sleep(1)
+        logger.warning("POT provider did not become ready within %ss", _READY_ATTEMPTS)
+        return False
+
+    async def _pump_logs(self, proc: asyncio.subprocess.Process) -> None:
+        assert proc.stdout is not None
+        try:
+            async for line in proc.stdout:
+                logger.info("[POT] %s", line.decode(errors="replace").rstrip())
+        except asyncio.CancelledError:
+            pass
+
+
+manager = PotProviderManager()

@@ -124,6 +124,15 @@ class TestSettingsRepository:
         settings = database.get_settings_row()
         assert settings["yt_ip_family"] == "ipv6"
 
+    def test_update_settings_pot_round_trip(self):
+        """Test that the POT provider settings round-trip."""
+        import database
+
+        database.update_settings({"yt_pot_enabled": True, "yt_pot_provider_url": "http://pot-host:4416"})
+        settings = database.get_settings_row()
+        assert settings["yt_pot_enabled"] == 1
+        assert settings["yt_pot_provider_url"] == "http://pot-host:4416"
+
     def test_update_settings_integer_value(self):
         """Test updating an integer setting."""
         import database

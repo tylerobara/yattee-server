@@ -146,8 +146,9 @@ async def get_video(
         # Live broadcasts: skip Invidious and let yt-dlp extract instead.
         # Invidious + companion's POT for live segments is fragile (we've
         # seen consistent 403s on /videoplayback even when IPs match);
-        # yt-dlp uses its own deno+bgutil pipeline which produces fresher
-        # tokens. Falling through to the hybrid path picks up yt-dlp.
+        # yt-dlp (with the bgutil POT provider, when yt_pot_enabled is on)
+        # produces fresher tokens. Falling through to the hybrid path picks
+        # up yt-dlp.
         if _looks_like_live(data):
             logger.info(
                 f"[Videos] Live broadcast detected for {video_id}; "

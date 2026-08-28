@@ -10,6 +10,28 @@ from ytdlp_wrapper._sanitize import YtDlpError, is_valid_url
 logger = logging.getLogger(__name__)
 
 
+def ytdlp_pot_args(s) -> List[str]:
+    """PO token provider args from settings.
+
+    The bgutil plugin is always installed (requirements.txt), so when POT is
+    disabled we pass fetch_pot=never to stop the plugin from pinging its
+    default 127.0.0.1:4416 on every call. When enabled, the base_url is only
+    emitted while a provider is actually reachable (external URL configured,
+    or the bundled process reports healthy) — otherwise every yt-dlp call
+    would pay for a failing ping.
+    """
+    if not s.yt_pot_enabled:
+        return ["--extractor-args", "youtube:fetch_pot=never"]
+    url = s.effective_pot_provider_url()
+    if url:
+        return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={url}"]
+    import pot_provider  # late import: settings <-> pot_provider cycle
+
+    if pot_provider.manager.is_healthy():
+        return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_provider.DEFAULT_BASE_URL}"]
+    return []
+
+
 def ytdlp_network_args(s) -> List[str]:
     """Network-related yt-dlp args from settings: egress proxy + forced IP family.
 
@@ -25,6 +47,7 @@ def ytdlp_network_args(s) -> List[str]:
         args.append("--force-ipv6")
     elif family == "ipv4":
         args.append("--force-ipv4")
+    args.extend(ytdlp_pot_args(s))
     return args
 
 

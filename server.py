@@ -21,6 +21,7 @@ import database
 import env_provisioning
 import feed_fetcher
 import invidious_proxy
+import pot_provider
 from basic_auth import BasicAuthMiddleware
 from database.repositories.sites import get_enabled_sites
 from routers import admin, channels, comments, playlists, proxy, search, storyboards, subscriptions, videos
@@ -35,6 +36,8 @@ async def lifespan(app: FastAPI):
     database.init_db()
     # Startup: Auto-provision admin user and settings from env vars
     env_provisioning.apply_env_provisioning()
+    # Startup: Start the bundled POT provider if enabled
+    await pot_provider.manager.apply_settings(get_settings())
     # Startup: Clean up old download files then start periodic cleanup task
     proxy.cleanup_old_files_sync()
     proxy.start_cleanup_task()
@@ -43,6 +46,8 @@ async def lifespan(app: FastAPI):
     # Startup: Start avatar cache cleanup task
     avatar_cache.start_avatar_cleanup_task()
     yield
+    # Shutdown: Stop the POT provider process
+    await pot_provider.manager.stop()
     # Shutdown: Stop avatar cache cleanup task
     avatar_cache.stop_avatar_cleanup_task()
     # Shutdown: Stop feed fetcher
@@ -201,7 +206,7 @@ async def info():
     import importlib.metadata
 
     packages = {}
-    for pkg in ["fastapi", "uvicorn", "aiohttp", "yt-dlp"]:
+    for pkg in ["fastapi", "uvicorn", "aiohttp", "yt-dlp", "bgutil-ytdlp-pot-provider"]:
         try:
             packages[pkg] = importlib.metadata.version(pkg)
         except importlib.metadata.PackageNotFoundError:
@@ -224,6 +229,7 @@ async def info():
             "ffmpeg": ffmpeg_version,
         },
         "packages": packages,
+        "pot_provider": pot_provider.manager.status(),
         "config": {
             "cache_video_ttl": s.cache_video_ttl,
             "cache_search_ttl": s.cache_search_ttl,
