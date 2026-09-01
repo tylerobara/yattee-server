@@ -881,8 +881,9 @@ def _like_count_from_next(nxt: Dict[str, Any]) -> Optional[int]:
 def _recommended_videos_from_next(nxt: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract recommended videos from /next secondaryResults.
 
-    Modern WEB responses wrap each recommendation in:
-    - itemSectionRenderer.contents[*].lockupViewModel (new)
+    Modern WEB responses place each recommendation in:
+    - lockupViewModel directly in results[*] (current)
+    - itemSectionRenderer.contents[*].lockupViewModel
     - compactVideoRenderer (legacy path)
     """
     secondary = (
@@ -896,6 +897,11 @@ def _recommended_videos_from_next(nxt: Dict[str, Any]) -> List[Dict[str, Any]]:
     for item in secondary:
         if "compactVideoRenderer" in item:
             out.append(_compact_video_to_invidious(item["compactVideoRenderer"]))
+            continue
+        if "lockupViewModel" in item:
+            converted = _lockup_video_view_model_to_invidious(item["lockupViewModel"])
+            if converted:
+                out.append(converted)
             continue
         section = item.get("itemSectionRenderer", {})
         for content in section.get("contents", []):
@@ -917,6 +923,10 @@ def _lockup_video_view_model_to_invidious(renderer: Dict[str, Any]) -> Optional[
     """
     content_id = renderer.get("contentId", "")
     if not content_id:
+        return None
+
+    content_type = renderer.get("contentType", "")
+    if content_type and content_type != "LOCKUP_CONTENT_TYPE_VIDEO":
         return None
 
     metadata_vm = renderer.get("metadata", {}).get("lockupMetadataViewModel", {})
