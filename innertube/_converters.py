@@ -4,6 +4,7 @@ These converters produce dicts in the same shape as the Invidious API,
 so the existing `invidious_to_video_list_item()` etc. converters can be reused.
 """
 
+import base64
 import logging
 import re
 from datetime import datetime
@@ -669,11 +670,68 @@ def _parse_mime_type(mime_type: str) -> Dict[str, str]:
     return {"type": mime_type, "container": container, "encoding": encoding}
 
 
+def _decode_xtags(raw: Optional[str]) -> Dict[str, str]:
+    """Decode InnerTube's base64url protobuf `xtags` into key/value pairs.
+
+    The WEB /player response encodes per-track audio metadata as a protobuf
+    message (repeated `{string key = 1; string value = 2;}`), e.g. decoding
+    `ChEKBWFjb250EghvcmlnaW5hbAoNCgRsYW5nEgVlbi1VUw` yields
+    `{"acont": "original", "lang": "en-US"}`. The same pairs appear in plain
+    `acont=original:lang=en-US` form on the deciphered googlevideo URL, which
+    is what lets `merge_stream_urls` pair multi-audio-track formats.
+
+    Returns an empty dict for a missing or undecodable value.
+    """
+    if not raw:
+        return {}
+    try:
+        padded = raw.replace("-", "+").replace("_", "/")
+        data = base64.b64decode(padded + "=" * (-len(padded) % 4))
+    except (ValueError, TypeError):
+        return {}
+
+    def _varint(buf: bytes, pos: int) -> tuple:
+        result = shift = 0
+        while True:
+            byte = buf[pos]
+            pos += 1
+            result |= (byte & 0x7F) << shift
+            shift += 7
+            if not byte & 0x80:
+                return result, pos
+
+    out: Dict[str, str] = {}
+    try:
+        i = 0
+        while i < len(data):
+            tag, i = _varint(data, i)
+            if tag != 0x0A:  # field 1, length-delimited
+                return {}
+            length, i = _varint(data, i)
+            entry = data[i : i + length]
+            i += length
+            j = 0
+            pair: Dict[int, str] = {}
+            while j < len(entry):
+                inner_tag, j = _varint(entry, j)
+                inner_len, j = _varint(entry, j)
+                pair[inner_tag >> 3] = entry[j : j + inner_len].decode("utf-8")
+                j += inner_len
+            if 1 in pair:
+                out[pair[1]] = pair.get(2, "")
+    except (IndexError, UnicodeDecodeError):
+        return {}
+    return out
+
+
 def _format_to_invidious(fmt: Dict[str, Any]) -> Dict[str, Any]:
     """Convert a single InnerTube streamingData format to Invidious shape.
 
     URL is intentionally left empty — WEB client URLs are ciphered, so the
-    caller must join yt-dlp's deciphered URL by itag.
+    caller must join yt-dlp's deciphered URL by itag. The decoded `xtags`
+    (audio language / DRC / ...) travel along under `_xtags` so the join can
+    tell multi-audio-track variants of the same itag apart; the router strips
+    that key before the response is built.
     """
     mime_type = fmt.get("mimeType", "")
     parts = _parse_mime_type(mime_type)
@@ -697,6 +755,7 @@ def _format_to_invidious(fmt: Dict[str, Any]) -> Dict[str, Any]:
         "quality": fmt.get("qualityLabel") or fmt.get("quality", "") or (f"{height}p" if height else ""),
         "size": str(fmt.get("contentLength")) if fmt.get("contentLength") else None,
         "audioQuality": fmt.get("audioQuality") if is_audio else None,
+        "_xtags": _decode_xtags(fmt.get("xtags")),
     }
 
     audio_track = fmt.get("audioTrack")
