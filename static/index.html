@@ -81,7 +81,7 @@
                                         <input type="checkbox" :checked="site.enabled" @change="toggleSite(site.id, $event.target.checked)">
                                         <span class="toggle-slider"></span>
                                     </label>
-                                    <template x-if="site.credential_count > 0">
+                                    <template x-if="site.cookie_validation_supported && site.credential_count > 0">
                                         <button class="btn-sm-secondary" :disabled="validatingSiteId === site.id" @click="validateSite(site.id)" x-text="validatingSiteId === site.id ? 'Validating…' : 'Validate'"></button>
                                     </template>
                                     <button class="btn-sm-secondary" @click="$dispatch('open-test-modal', { siteId: site.id })">Test</button>

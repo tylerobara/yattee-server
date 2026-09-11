@@ -67,6 +67,8 @@ class SiteResponse(BaseModel):
     proxy_streaming: bool = True
     credential_count: Optional[int] = None
     stale_credential_count: Optional[int] = None
+    # True when the server can probe this site's cookies (YouTube LOGGED_IN check)
+    cookie_validation_supported: bool = False
     credentials: Optional[List[CredentialResponse]] = None
     created_at: str
     updated_at: str
@@ -109,6 +111,7 @@ async def list_sites(admin: dict = Depends(get_current_admin)):
             priority=s["priority"],
             credential_count=s["credential_count"],
             stale_credential_count=s.get("stale_credential_count") or 0,
+            cookie_validation_supported=credentials_module.match_site("youtube", s["extractor_pattern"]),
             created_at=s["created_at"] or "",
             updated_at=s["updated_at"] or "",
         )
@@ -526,6 +529,7 @@ def _site_to_response(site: dict) -> SiteResponse:
         enabled=bool(site["enabled"]),
         priority=site["priority"],
         proxy_streaming=bool(site.get("proxy_streaming", True)),
+        cookie_validation_supported=credentials_module.match_site("youtube", site["extractor_pattern"]),
         credentials=credentials,
         created_at=site["created_at"] or "",
         updated_at=site["updated_at"] or "",

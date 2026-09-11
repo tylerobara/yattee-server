@@ -316,6 +316,8 @@ class TestAdminApi:
             )
         assert response.status_code == 200
         probe.assert_not_called()
+        assert response.json()["cookie_validation_supported"] is False
+        assert [s for s in admin_client.get("/api/sites").json() if s["id"] == 1][0]["cookie_validation_supported"]
 
     def test_list_reports_stale_count_and_validate_endpoint(self, admin_client):
         cred_id = database.add_credential(1, "cookies_file", AUTH_JAR)
