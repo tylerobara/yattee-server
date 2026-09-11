@@ -125,6 +125,14 @@ class TestInfoEndpoint:
         # Should be a boolean
         assert isinstance(data["config"]["allow_all_sites_for_extraction"], bool)
 
+    def test_info_returns_cookie_status(self):
+        """Test /info exposes account cookie health for clients."""
+        response = self.client.get("/info")
+        assert response.status_code == 200
+        cookies = response.json()["cookies"]
+        assert cookies["status"] == "none"  # fresh DB has no cookie jar
+        assert set(cookies) == {"status", "stale_since", "last_validated_at", "last_error"}
+
     def test_info_returns_sites_list(self):
         """Test /info returns sites list."""
         response = self.client.get("/info")

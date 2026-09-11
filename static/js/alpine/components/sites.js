@@ -11,6 +11,7 @@ document.addEventListener('alpine:init', () => {
         proxyStreaming: true,
         credentials: [],
         credentialDropdownOpen: false,
+        validatingSiteId: null,
 
         get isEditing() {
             return this.editingSiteId !== null;
@@ -46,6 +47,34 @@ document.addEventListener('alpine:init', () => {
             } catch (err) {
                 await this.loadSites();
             }
+        },
+
+        async validateSite(siteId) {
+            this.validatingSiteId = siteId;
+            try {
+                const results = await Alpine.store('api').post(`/sites/${siteId}/validate`, {});
+                const toast = Alpine.store('toast');
+                if (!results.length) {
+                    toast.success('No YouTube cookie credentials to validate');
+                } else if (results.some(r => r.logged_in === false)) {
+                    toast.error('Cookies are logged out — marked stale; upload a fresh jar');
+                } else if (results.every(r => r.logged_in === true)) {
+                    toast.success('Cookies are valid (logged in)');
+                } else {
+                    toast.error('Could not determine cookie state: ' + (results.find(r => r.error)?.error || 'unknown'));
+                }
+                await this.loadSites();
+            } catch (err) {
+                // Error handled by API store
+            } finally {
+                this.validatingSiteId = null;
+            }
+        },
+
+        formatDate(iso) {
+            if (!iso) return '';
+            const d = new Date(iso);
+            return isNaN(d) ? iso : d.toLocaleString();
         },
 
         async deleteSite(siteId) {
@@ -85,7 +114,11 @@ document.addEventListener('alpine:init', () => {
                     credential_type: c.credential_type,
                     key: c.key,
                     value: '',
-                    hasExisting: c.has_value
+                    hasExisting: c.has_value,
+                    status: c.status,
+                    stale_since: c.stale_since,
+                    last_validated_at: c.last_validated_at,
+                    last_error: c.last_error
                 }));
 
                 this.view = 'form';
@@ -221,12 +254,8 @@ document.addEventListener('alpine:init', () => {
                 }
             }
 
-            for (const cred of site.credentials || []) {
-                if (!keepIds.has(cred.id)) {
-                    await api.delete(`/sites/${siteId}/credentials/${cred.id}`);
-                }
-            }
-
+            // Add new values first: if the server rejects one (e.g. an already
+            // logged-out cookie jar), the credential it was replacing survives.
             for (const cred of this.credentials) {
                 if (cred.value) {
                     await api.post(`/sites/${siteId}/credentials`, {
@@ -234,6 +263,12 @@ document.addEventListener('alpine:init', () => {
                         key: cred.key || null,
                         value: cred.value
                     });
+                }
+            }
+
+            for (const cred of site.credentials || []) {
+                if (!keepIds.has(cred.id)) {
+                    await api.delete(`/sites/${siteId}/credentials/${cred.id}`);
                 }
             }
 

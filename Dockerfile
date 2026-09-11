@@ -1,3 +1,32 @@
+# POT_PROVIDER=bundled|none — whether to include the bgutil POT provider server
+ARG POT_PROVIDER=bundled
+
+# Build the bgutil POT provider server (needs node >= 22; final image ships the
+# node binary from this stage). Version must match the pip plugin pin in
+# requirements.txt (bgutil-ytdlp-pot-provider).
+FROM node:22-bookworm-slim AS pot-builder
+ARG POT_PROVIDER_VERSION=1.3.2
+ADD https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/refs/tags/${POT_PROVIDER_VERSION}.tar.gz /tmp/pot.tar.gz
+RUN mkdir -p /build \
+    && tar xzf /tmp/pot.tar.gz -C /build --strip-components=1 \
+    && cd /build/server \
+    && npm ci --no-audit --no-fund \
+    && npx tsc \
+    && test -f build/main.js \
+    && npm ci --omit=dev --no-audit --no-fund \
+    && mkdir -p /opt/bgutil-pot-provider/bin \
+    && cp -r build node_modules package.json /opt/bgutil-pot-provider/ \
+    && cp /usr/local/bin/node /opt/bgutil-pot-provider/bin/node
+
+FROM python:3.12-slim AS pot-stage-bundled
+COPY --from=pot-builder /opt/bgutil-pot-provider /opt/bgutil-pot-provider
+
+FROM python:3.12-slim AS pot-stage-none
+# Empty placeholder so the final COPY succeeds without the bundle
+RUN mkdir -p /opt/bgutil-pot-provider
+
+FROM pot-stage-${POT_PROVIDER} AS pot-final
+
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -19,6 +48,9 @@ ENV PATH="${DENO_INSTALL}/bin:${PATH}"
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Bundled bgutil POT provider (empty dir when built with POT_PROVIDER=none)
+COPY --from=pot-final /opt/bgutil-pot-provider /opt/bgutil-pot-provider
 
 # Git version for /info endpoint (passed during build)
 ARG GIT_VERSION=""

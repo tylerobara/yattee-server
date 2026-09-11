@@ -56,7 +56,8 @@ async def run_ytdlp_download(
         # Get credentials for this URL
         cred_args = []
         try:
-            cred_args, temp_files = await credentials.get_credentials_for_url(url)
+            resolved = await credentials.get_credentials_for_url(url)
+            cred_args, temp_files = resolved.args, resolved.temp_files
         except (ValueError, KeyError, TypeError, OSError) as e:
             logger.warning(f"[FastDownload] Failed to get credentials: {e}")
 

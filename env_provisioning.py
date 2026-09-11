@@ -17,11 +17,13 @@ def apply_env_provisioning():
     - INVIDIOUS_INSTANCE_URL: configures Invidious instance and enables proxy
     - YT_EGRESS_PROXY: configures HTTP/SOCKS proxy for YouTube-bound traffic
     - YT_IP_FAMILY: forces IP family (auto/ipv4/ipv6) for YouTube-bound traffic
+    - YT_POT_ENABLED + YT_POT_PROVIDER_URL: configures the PO token provider
     """
     _provision_admin_user()
     _provision_invidious()
     _provision_egress_proxy()
     _provision_ip_family()
+    _provision_pot()
 
 
 def _provision_admin_user():
@@ -83,3 +85,29 @@ def _provision_ip_family():
     s.yt_ip_family = family
     settings_module.save_settings(s)
     logger.info("ENV provisioning: configured YT IP family '%s'", family)
+
+
+def _provision_pot():
+    """Configure the PO token provider from env vars."""
+    enabled = config.YT_POT_ENABLED
+    url = config.YT_POT_PROVIDER_URL
+    if enabled is None and url is None:
+        return
+
+    s = settings_module.load_settings()
+    if enabled is not None:
+        value = enabled.strip().lower()
+        if value in ("true", "1", "yes"):
+            s.yt_pot_enabled = True
+        elif value in ("false", "0", "no"):
+            s.yt_pot_enabled = False
+        else:
+            logger.warning("ENV provisioning: ignoring invalid YT_POT_ENABLED %r (use true/false)", enabled)
+    if url is not None:
+        s.yt_pot_provider_url = url.rstrip("/")
+    settings_module.save_settings(s)
+    logger.info(
+        "ENV provisioning: configured POT provider (enabled=%s, url=%s)",
+        s.yt_pot_enabled,
+        s.yt_pot_provider_url or "bundled",
+    )
