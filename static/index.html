@@ -69,13 +69,21 @@
                                 <div>
                                     <h3 class="text-lg font-medium mb-1" x-text="site.name"></h3>
                                     <div class="text-muted font-mono text-sm" x-text="site.extractor_pattern"></div>
-                                    <div class="text-muted text-sm mt-1" x-text="site.credential_count ? site.credential_count + ' credential(s)' : 'No credentials'"></div>
+                                    <div class="text-muted text-sm mt-1 flex items-center gap-2">
+                                        <span x-text="site.credential_count ? site.credential_count + ' credential(s)' : 'No credentials'"></span>
+                                        <template x-if="site.stale_credential_count > 0">
+                                            <span class="px-2 py-0.5 bg-border text-amber-400 text-xs rounded" title="Account cookies were rotated in the browser; the server is using anonymous access until you upload a fresh jar.">Cookies expired</span>
+                                        </template>
+                                    </div>
                                 </div>
                                 <div class="flex gap-2.5 items-center">
                                     <label class="toggle">
                                         <input type="checkbox" :checked="site.enabled" @change="toggleSite(site.id, $event.target.checked)">
                                         <span class="toggle-slider"></span>
                                     </label>
+                                    <template x-if="site.credential_count > 0">
+                                        <button class="btn-sm-secondary" :disabled="validatingSiteId === site.id" @click="validateSite(site.id)" x-text="validatingSiteId === site.id ? 'Validating…' : 'Validate'"></button>
+                                    </template>
                                     <button class="btn-sm-secondary" @click="$dispatch('open-test-modal', { siteId: site.id })">Test</button>
                                     <button class="btn-sm-secondary" @click="showEditForm(site.id)">Edit</button>
                                     <button class="btn-sm-danger" @click="deleteSite(site.id)">Delete</button>
@@ -159,7 +167,15 @@
                             <template x-for="(cred, index) in credentials" :key="index">
                                 <div class="bg-bg border border-border rounded-md p-3 mb-2.5 flex flex-col">
                                     <div class="flex justify-between mb-1">
-                                        <div class="font-medium" x-text="getCredentialType(cred.credential_type).label"></div>
+                                        <div class="flex items-center gap-2">
+                                            <div class="font-medium" x-text="getCredentialType(cred.credential_type).label"></div>
+                                            <template x-if="cred.status === 'stale'">
+                                                <span class="text-xs text-amber-400" :title="cred.last_error || ''" x-text="'Stale since ' + formatDate(cred.stale_since)"></span>
+                                            </template>
+                                            <template x-if="cred.status !== 'stale' && cred.last_validated_at">
+                                                <span class="text-xs text-muted" :title="cred.last_error || ''" x-text="'Validated ' + formatDate(cred.last_validated_at)"></span>
+                                            </template>
+                                        </div>
                                         <button type="button" class="btn-sm-danger" @click="removeCredential(index)">Remove</button>
                                     </div>
                                     <template x-if="getCredentialType(cred.credential_type).description">

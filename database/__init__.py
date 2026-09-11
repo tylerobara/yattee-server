@@ -36,10 +36,12 @@ __all__ = [
     "delete_credential",
     "delete_site",
     "get_all_sites",
+    "get_cookie_credentials",
     "get_credential",
     "get_enabled_sites",
     "get_site",
     "get_site_by_extractor",
+    "update_credential_status",
     "update_site",
     # users
     "count_admin_users",
@@ -92,10 +94,12 @@ from database.repositories.sites import (
     delete_credential,
     delete_site,
     get_all_sites,
+    get_cookie_credentials,
     get_credential,
     get_enabled_sites,
     get_site,
     get_site_by_extractor,
+    update_credential_status,
     update_site,
 )
 from database.repositories.users import (

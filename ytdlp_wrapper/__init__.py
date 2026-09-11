@@ -9,8 +9,10 @@ from ytdlp_wrapper._cache import (
 )
 from ytdlp_wrapper._captions import fetch_caption_content, get_caption_url
 from ytdlp_wrapper._core import (
+    YtDlpRun,
     _separate_flags_and_urls,
     run_ytdlp,
+    run_ytdlp_ex,
     ytdlp_network_args,
     ytdlp_pot_args,
 )
@@ -55,7 +57,9 @@ __all__ = [
     "sanitize_extension",
     # _core
     "_separate_flags_and_urls",
+    "YtDlpRun",
     "run_ytdlp",
+    "run_ytdlp_ex",
     "ytdlp_network_args",
     "ytdlp_pot_args",
     # _youtube

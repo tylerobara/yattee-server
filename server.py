@@ -17,6 +17,7 @@ from starlette.responses import Response
 
 import avatar_cache
 import config
+import cookie_health
 import database
 import env_provisioning
 import feed_fetcher
@@ -38,6 +39,7 @@ async def lifespan(app: FastAPI):
     env_provisioning.apply_env_provisioning()
     # Startup: Start the bundled POT provider if enabled
     await pot_provider.manager.apply_settings(get_settings())
+    cookie_health.start_task()
     # Startup: Clean up old download files then start periodic cleanup task
     proxy.cleanup_old_files_sync()
     proxy.start_cleanup_task()
@@ -47,6 +49,7 @@ async def lifespan(app: FastAPI):
     avatar_cache.start_avatar_cleanup_task()
     yield
     # Shutdown: Stop the POT provider process
+    cookie_health.stop_task()
     await pot_provider.manager.stop()
     # Shutdown: Stop avatar cache cleanup task
     avatar_cache.stop_avatar_cleanup_task()
@@ -230,6 +233,7 @@ async def info():
         },
         "packages": packages,
         "pot_provider": pot_provider.manager.status(),
+        "cookies": cookie_health.status_summary(),
         "config": {
             "cache_video_ttl": s.cache_video_ttl,
             "cache_search_ttl": s.cache_search_ttl,

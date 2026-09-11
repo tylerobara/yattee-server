@@ -34,7 +34,9 @@ def get_site(site_id: int) -> Optional[Dict[str, Any]]:
 
         # Get credentials for this site (include value to check has_value, but don't expose actual content)
         cursor.execute(
-            "SELECT id, credential_type, key, value, is_encrypted, created_at FROM credentials WHERE site_id = ?",
+            """SELECT id, credential_type, key, value, is_encrypted, created_at,
+                      status, stale_since, last_validated_at, last_error
+               FROM credentials WHERE site_id = ?""",
             (site_id,),
         )
         site["credentials"] = [dict(row) for row in cursor.fetchall()]
@@ -47,7 +49,8 @@ def get_all_sites() -> List[Dict[str, Any]]:
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT s.*, COUNT(c.id) as credential_count
+            SELECT s.*, COUNT(c.id) as credential_count,
+                   COALESCE(SUM(CASE WHEN c.status = 'stale' THEN 1 ELSE 0 END), 0) as stale_credential_count
             FROM sites s
             LEFT JOIN credentials c ON s.id = c.site_id
             GROUP BY s.id
@@ -56,8 +59,15 @@ def get_all_sites() -> List[Dict[str, Any]]:
         return [dict(row) for row in cursor.fetchall()]
 
 
-def get_enabled_sites() -> List[Dict[str, Any]]:
-    """Get all enabled sites with their credentials for yt-dlp."""
+def get_enabled_sites(include_stale: bool = False) -> List[Dict[str, Any]]:
+    """Get all enabled sites with their credentials for yt-dlp / InnerTube.
+
+    Credentials marked stale (rotated account cookies) are omitted unless
+    include_stale is True, so consumers fall back to anonymous access.
+    """
+    cred_sql = "SELECT * FROM credentials WHERE site_id = ?"
+    if not include_stale:
+        cred_sql += " AND status != 'stale'"
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -66,7 +76,7 @@ def get_enabled_sites() -> List[Dict[str, Any]]:
         sites = []
         for site_row in cursor.fetchall():
             site = dict(site_row)
-            cursor.execute("SELECT * FROM credentials WHERE site_id = ?", (site["id"],))
+            cursor.execute(cred_sql, (site["id"],))
             site["credentials"] = [dict(row) for row in cursor.fetchall()]
             sites.append(site)
         return sites
@@ -169,3 +179,37 @@ def delete_credential(credential_id: int) -> bool:
         return cursor.rowcount > 0
 
 
+def get_cookie_credentials(site_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Get all cookies_file credentials joined with their site (for validation)."""
+    sql = """SELECT c.*, s.extractor_pattern, s.enabled AS site_enabled
+             FROM credentials c JOIN sites s ON s.id = c.site_id
+             WHERE c.credential_type = 'cookies_file'"""
+    params: tuple = ()
+    if site_id is not None:
+        sql += " AND c.site_id = ?"
+        params = (site_id,)
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(sql + " ORDER BY c.id", params)
+        return [dict(row) for row in cursor.fetchall()]
+
+
+def update_credential_status(
+    credential_id: int,
+    *,
+    status: str,
+    stale_since: Optional[str] = None,
+    last_validated_at: Optional[str] = None,
+    last_error: Optional[str] = None,
+) -> bool:
+    """Set staleness columns on a credential. Returns True if updated."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE credentials
+               SET status = ?, stale_since = ?, last_validated_at = ?, last_error = ?
+               WHERE id = ?""",
+            (status, stale_since, last_validated_at, last_error, credential_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0

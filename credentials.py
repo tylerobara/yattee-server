@@ -3,6 +3,7 @@
 import logging
 import os
 import tempfile
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -128,24 +129,38 @@ def match_site(extractor_hint: str, site_pattern: str) -> bool:
     return False
 
 
-async def get_credentials_for_url(url: str) -> Tuple[List[str], List[str]]:
+@dataclass
+class ResolvedCredentials:
+    """yt-dlp args built from credentials matching a URL.
+
+    cookie_ids lists the cookies_file credential rows that contributed a
+    --cookies arg, so outcome-based staleness tracking can attribute a
+    degraded/failed run back to a specific jar.
+    """
+
+    args: List[str] = field(default_factory=list)
+    temp_files: List[str] = field(default_factory=list)
+    cookie_ids: List[int] = field(default_factory=list)
+
+
+async def get_credentials_for_url(url: str) -> ResolvedCredentials:
     """Get yt-dlp arguments for credentials matching a URL.
+
+    Stale credentials are already filtered out by get_enabled_sites().
 
     Args:
         url: The URL to find credentials for
-
-    Returns:
-        Tuple of (yt-dlp args list, temp file paths to clean up)
     """
+    resolved = ResolvedCredentials()
     extractor_hint = extract_extractor_hint(url)
     if not extractor_hint:
-        return [], []
+        return resolved
 
     # Get all enabled sites
     sites = database.get_enabled_sites()
 
-    args = []
-    temp_files = []
+    args = resolved.args
+    temp_files = resolved.temp_files
 
     for site in sites:
         if not match_site(extractor_hint, site["extractor_pattern"]):
@@ -170,10 +185,12 @@ async def get_credentials_for_url(url: str) -> Tuple[List[str], List[str]]:
                 cred_args, cred_temp = _build_credential_args(cred_type, key, value)
                 args.extend(cred_args)
                 temp_files.extend(cred_temp)
+                if cred_type == "cookies_file" and cred.get("id") is not None:
+                    resolved.cookie_ids.append(cred["id"])
             except (ValueError, KeyError, TypeError) as e:
                 logger.error(f"Failed to build args for {cred_type}: {e}")
 
-    return args, temp_files
+    return resolved
 
 
 def _build_credential_args(cred_type: str, key: Optional[str], value: str) -> Tuple[List[str], List[str]]:
