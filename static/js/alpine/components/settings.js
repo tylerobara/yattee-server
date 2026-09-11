@@ -14,6 +14,8 @@ document.addEventListener('alpine:init', () => {
         yt_egress_proxy_enabled: true,
         yt_egress_proxy: '',
         yt_ip_family: 'auto',
+        yt_pot_enabled: false,
+        yt_pot_provider_url: '',
 
         innertube_enabled: true,
 
@@ -74,6 +76,8 @@ document.addEventListener('alpine:init', () => {
                 this.yt_egress_proxy_enabled = settings.yt_egress_proxy_enabled !== false;
                 this.yt_egress_proxy = settings.yt_egress_proxy || '';
                 this.yt_ip_family = settings.yt_ip_family || 'auto';
+                this.yt_pot_enabled = settings.yt_pot_enabled || false;
+                this.yt_pot_provider_url = settings.yt_pot_provider_url || '';
                 this.innertube_enabled = settings.innertube_enabled !== false;
                 this.invidious_enabled = settings.invidious_enabled !== false;
                 this.invidious_instance = settings.invidious_instance || '';
@@ -127,6 +131,8 @@ document.addEventListener('alpine:init', () => {
                     yt_egress_proxy_enabled: this.yt_egress_proxy_enabled,
                     yt_egress_proxy: this.yt_egress_proxy || null,
                     yt_ip_family: this.yt_ip_family || 'auto',
+                    yt_pot_enabled: this.yt_pot_enabled,
+                    yt_pot_provider_url: this.yt_pot_provider_url || null,
                     innertube_enabled: this.innertube_enabled,
                     invidious_enabled: this.invidious_enabled,
                     invidious_instance: this.invidious_instance || null,

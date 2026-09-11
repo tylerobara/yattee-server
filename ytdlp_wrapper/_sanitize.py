@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 class YtDlpError(Exception):
     """Error from yt-dlp execution."""
 
-    pass
+    def __init__(self, message: str, stderr: str = "", cookie_ids=None):
+        super().__init__(message)
+        self.stderr = stderr
+        self.cookie_ids = list(cookie_ids or [])
 
 
 def sanitize_video_id(video_id: str) -> str:

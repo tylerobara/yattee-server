@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from cachetools import TTLCache
 
+from converters._helpers import _xtags_from_url
 from innertube._client import InnerTubeError, innertube_post
 from innertube._converters import _parse_storyboard_spec, innertube_player_to_invidious_video
 
@@ -127,6 +128,27 @@ async def _fetch_storyboard_spec_tvhtml5(video_id: str) -> str:
     return renderer.get("spec") or ""
 
 
+def _ytdlp_format_key(fmt: Dict[str, Any]) -> Optional[Tuple[str, Tuple[Tuple[str, str], ...]]]:
+    """Return the (itag, xtags) join key for a yt-dlp format, or None if unusable.
+
+    yt-dlp names YouTube formats by itag, suffixed when one itag has several
+    variants: `140-3` (audio track index on multi-language videos), `251-drc`
+    (dynamic range compressed), `hls-480` (HLS ladder). The suffix alone does
+    not say which InnerTube variant it is, but the deciphered googlevideo URL
+    carries the plain `xtags=acont=...:lang=...` marker, which is exactly what
+    InnerTube's protobuf `xtags` decodes to. Formats without an `xtags` param
+    (video-only, single-audio-track videos) key on the bare itag.
+    """
+    url = fmt.get("url")
+    if not url:
+        return None
+    fid = str(fmt.get("format_id") or "")
+    itag = fid.split("-", 1)[0]
+    if not itag.isdigit():
+        return None
+    return itag, tuple(sorted(_xtags_from_url(url).items()))
+
+
 def merge_stream_urls(
     it_video: Dict[str, Any], ytdlp_formats: Optional[List[Dict[str, Any]]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -134,36 +156,48 @@ def merge_stream_urls(
 
     InnerTube provides rich metadata (itag, mimeType, bitrate, audioTrack, ...)
     but its WEB client URLs are ciphered. yt-dlp returns deciphered URLs keyed
-    by format_id, which is the itag for YouTube. We look up by itag and drop
-    formats we cannot serve.
+    by format_id, which is the itag for YouTube, plus the per-track `xtags`
+    on the URL for videos with several audio tracks (see `_ytdlp_format_key`).
+    We look up by (itag, xtags) and drop formats we cannot serve. InnerTube
+    variants yt-dlp does not expose (DRC, `vb=1`) therefore fall away instead
+    of duplicating the same URL under several entries.
 
-    Returns (formatStreams, adaptiveFormats) as lists of Invidious-shaped dicts.
+    Returns (formatStreams, adaptiveFormats) as lists of Invidious-shaped dicts
+    with the internal `_xtags` helper key removed.
     """
-    ytdlp_by_itag: Dict[str, Dict[str, Any]] = {}
+    ytdlp_by_key: Dict[Tuple[str, Tuple[Tuple[str, str], ...]], Dict[str, Any]] = {}
     for fmt in ytdlp_formats or []:
-        fid = str(fmt.get("format_id") or "")
-        if fid.isdigit() and fmt.get("url"):
-            ytdlp_by_itag[fid] = fmt
+        key = _ytdlp_format_key(fmt)
+        if key is not None:
+            ytdlp_by_key.setdefault(key, fmt)
+
+    def _join(fmt: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        itag = str(fmt.get("itag") or "")
+        xtags = fmt.get("_xtags") or {}
+        yt = ytdlp_by_key.get((itag, tuple(sorted(xtags.items()))))
+        if not yt:
+            return None
+        merged = {k: v for k, v in fmt.items() if k != "_xtags"}
+        merged["url"] = yt["url"]
+        return merged
 
     merged_format_streams: List[Dict[str, Any]] = []
     merged_adaptive: List[Dict[str, Any]] = []
     dropped = 0
 
     for fmt in it_video.get("formatStreams", []):
-        itag = str(fmt.get("itag") or "")
-        yt = ytdlp_by_itag.get(itag)
-        if not yt:
+        merged = _join(fmt)
+        if merged is None:
             dropped += 1
             continue
-        merged_format_streams.append({**fmt, "url": yt["url"]})
+        merged_format_streams.append(merged)
 
     for fmt in it_video.get("adaptiveFormats", []):
-        itag = str(fmt.get("itag") or "")
-        yt = ytdlp_by_itag.get(itag)
-        if not yt:
+        merged = _join(fmt)
+        if merged is None:
             dropped += 1
             continue
-        merged_adaptive.append({**fmt, "url": yt["url"]})
+        merged_adaptive.append(merged)
 
     if dropped:
         logger.debug(f"[InnerTube] merge_stream_urls: dropped {dropped} itag(s) missing from yt-dlp")

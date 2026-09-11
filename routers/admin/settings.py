@@ -47,6 +47,8 @@ class SettingsResponse(BaseModel):
     yt_egress_proxy_enabled: bool
     yt_egress_proxy: Optional[str]
     yt_ip_family: str
+    yt_pot_enabled: bool
+    yt_pot_provider_url: Optional[str]
     innertube_enabled: bool
     invidious_enabled: bool
     invidious_instance: Optional[str]
@@ -90,6 +92,8 @@ class SettingsUpdate(BaseModel):
     yt_egress_proxy_enabled: Optional[bool] = None
     yt_egress_proxy: Optional[str] = None
     yt_ip_family: Optional[Literal["auto", "ipv4", "ipv6"]] = None
+    yt_pot_enabled: Optional[bool] = None
+    yt_pot_provider_url: Optional[str] = None
     innertube_enabled: Optional[bool] = None
     invidious_enabled: Optional[bool] = None
     invidious_instance: Optional[str] = None
@@ -169,6 +173,19 @@ async def update_settings(data: SettingsUpdate, admin: dict = Depends(get_curren
             from innertube._client import reset_client
 
             await reset_client()
+        except ImportError:
+            pass
+
+    # POT provider changes: start/stop the bundled process and drop cached
+    # video info dicts, whose format URLs were minted without/with tokens
+    if any(k in update_data for k in ("yt_pot_enabled", "yt_pot_provider_url")):
+        import pot_provider
+
+        await pot_provider.manager.apply_settings(new_settings)
+        try:
+            from ytdlp_wrapper import reset_caches
+
+            reset_caches()
         except ImportError:
             pass
 

@@ -2,17 +2,21 @@
 
 from datetime import date, datetime
 
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
+import cookie_health
+import credentials as credentials_module
 import database
 import encryption
 
 from .deps import get_current_admin
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _serialize_timestamp(value: object) -> str:
@@ -22,6 +26,15 @@ def _serialize_timestamp(value: object) -> str:
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _serialize_optional_timestamp(value: object) -> Optional[str]:
+    """Convert nullable DB timestamp values, preserving None for Postgres datetimes."""
+    if value is None:
+        return None
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     return str(value)
 
@@ -61,6 +74,10 @@ class CredentialResponse(BaseModel):
     has_value: bool
     is_encrypted: bool
     created_at: str
+    status: str = "ok"
+    stale_since: Optional[str] = None
+    last_validated_at: Optional[str] = None
+    last_error: Optional[str] = None
 
 
 class SiteResponse(BaseModel):
@@ -71,6 +88,9 @@ class SiteResponse(BaseModel):
     priority: int
     proxy_streaming: bool = True
     credential_count: Optional[int] = None
+    stale_credential_count: Optional[int] = None
+    # True when the server can probe this site's cookies (YouTube LOGGED_IN check)
+    cookie_validation_supported: bool = False
     credentials: Optional[List[CredentialResponse]] = None
     created_at: str
     updated_at: str
@@ -85,6 +105,14 @@ class TestResponse(BaseModel):
     message: str
     extractor: Optional[str] = None
     title: Optional[str] = None
+
+
+class ValidateResult(BaseModel):
+    credential_id: int
+    site_id: int
+    logged_in: Optional[bool]
+    status: str
+    error: Optional[str] = None
 
 
 # =============================================================================
@@ -104,6 +132,8 @@ async def list_sites(admin: dict = Depends(get_current_admin)):
             enabled=bool(s["enabled"]),
             priority=s["priority"],
             credential_count=s["credential_count"],
+            stale_credential_count=s.get("stale_credential_count") or 0,
+            cookie_validation_supported=credentials_module.match_site("youtube", s["extractor_pattern"]),
             created_at=_serialize_timestamp(s["created_at"]),
             updated_at=_serialize_timestamp(s["updated_at"]),
         )
@@ -114,6 +144,8 @@ async def list_sites(admin: dict = Depends(get_current_admin)):
 @router.post("/api/sites", response_model=SiteResponse)
 async def create_site(data: SiteCreate, admin: dict = Depends(get_current_admin)):
     """Create a new site configuration."""
+    probes = [await _reject_logged_out_jar(data.extractor_pattern, cred) for cred in data.credentials]
+
     site_id = database.create_site(
         name=data.name,
         extractor_pattern=data.extractor_pattern,
@@ -123,12 +155,13 @@ async def create_site(data: SiteCreate, admin: dict = Depends(get_current_admin)
     )
 
     # Add credentials
-    for cred in data.credentials:
+    for cred, probe in zip(data.credentials, probes):
         is_encrypted = encryption.should_encrypt(cred.credential_type)
         value = encryption.encrypt(cred.value) if is_encrypted else cred.value
-        database.add_credential(
+        cred_id = database.add_credential(
             site_id=site_id, credential_type=cred.credential_type, key=cred.key, value=value, is_encrypted=is_encrypted
         )
+        _record_upload_probe(cred_id, probe)
 
     site = database.get_site(site_id)
     return _site_to_response(site)
@@ -173,8 +206,11 @@ async def delete_site(site_id: int, admin: dict = Depends(get_current_admin)):
 @router.post("/api/sites/{site_id}/credentials", response_model=CredentialResponse)
 async def add_credential(site_id: int, data: CredentialCreate, admin: dict = Depends(get_current_admin)):
     """Add a credential to a site."""
-    if not database.get_site(site_id):
+    site = database.get_site(site_id)
+    if not site:
         raise HTTPException(status_code=404, detail="Site not found")
+
+    probe = await _reject_logged_out_jar(site["extractor_pattern"], data)
 
     is_encrypted = encryption.should_encrypt(data.credential_type)
     value = encryption.encrypt(data.value) if is_encrypted else data.value
@@ -182,16 +218,19 @@ async def add_credential(site_id: int, data: CredentialCreate, admin: dict = Dep
     cred_id = database.add_credential(
         site_id=site_id, credential_type=data.credential_type, key=data.key, value=value, is_encrypted=is_encrypted
     )
+    _record_upload_probe(cred_id, probe)
 
     cred = database.get_credential(cred_id)
-    return CredentialResponse(
-        id=cred["id"],
-        credential_type=cred["credential_type"],
-        key=cred["key"],
-        has_value=True,
-        is_encrypted=cred["is_encrypted"],
-        created_at=_serialize_timestamp(cred["created_at"]),
-    )
+    return _credential_to_response(cred, has_value=True)
+
+
+@router.post("/api/sites/{site_id}/validate", response_model=List[ValidateResult])
+async def validate_site_cookies(site_id: int, admin: dict = Depends(get_current_admin)):
+    """Probe every YouTube cookies_file credential of a site and update its status."""
+    if not database.get_site(site_id):
+        raise HTTPException(status_code=404, detail="Site not found")
+    results = await cookie_health.validate_all(site_id)
+    return [ValidateResult(**r) for r in results]
 
 
 @router.delete("/api/sites/{site_id}/credentials/{credential_id}")
@@ -443,21 +482,67 @@ async def list_extractors(admin: dict = Depends(get_current_admin)):
 # =============================================================================
 
 
+def _is_youtube_cookie_jar(extractor_pattern: str, cred: CredentialCreate) -> bool:
+    return cred.credential_type == "cookies_file" and credentials_module.match_site("youtube", extractor_pattern)
+
+
+async def _reject_logged_out_jar(
+    extractor_pattern: str, cred: CredentialCreate
+) -> Optional[cookie_health.ProbeResult]:
+    """Probe a new YouTube cookie jar; 400 if YouTube already reports it logged out.
+
+    Returns the probe result (None for non-YouTube / non-cookie credentials).
+    """
+    if not _is_youtube_cookie_jar(extractor_pattern, cred):
+        return None
+    result = await cookie_health.probe_jar(cred.value)
+    logger.info(
+        f"[Sites] Upload probe: logged_in={result.logged_in} auth_cookies={result.has_auth_cookies} "
+        f"error={result.error}"
+    )
+    if result.logged_in is False:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "These YouTube cookies are already logged out — the session was rotated in the browser. "
+                "Export a fresh jar (ideally from a private window you then close) and upload again."
+            ),
+        )
+    return result
+
+
+def _record_upload_probe(cred_id: int, result: Optional[cookie_health.ProbeResult]) -> None:
+    """Persist the upload-time probe outcome on the freshly stored row."""
+    if result is None:
+        return
+    database.update_credential_status(
+        cred_id,
+        status="ok",
+        last_validated_at=cookie_health._now() if result.logged_in is True else None,
+        last_error=None if result.logged_in is True else result.error,
+    )
+
+
+def _credential_to_response(c: dict, has_value: Optional[bool] = None) -> CredentialResponse:
+    return CredentialResponse(
+        id=c["id"],
+        credential_type=c["credential_type"],
+        key=c["key"],
+        has_value=bool(c.get("value")) if has_value is None else has_value,
+        is_encrypted=bool(c["is_encrypted"]),
+        created_at=_serialize_timestamp(c.get("created_at")),
+        status=c.get("status") or "ok",
+        stale_since=_serialize_optional_timestamp(c.get("stale_since")),
+        last_validated_at=_serialize_optional_timestamp(c.get("last_validated_at")),
+        last_error=c.get("last_error"),
+    )
+
+
 def _site_to_response(site: dict) -> SiteResponse:
     """Convert database site dict to SiteResponse."""
     credentials = None
     if "credentials" in site:
-        credentials = [
-            CredentialResponse(
-                id=c["id"],
-                credential_type=c["credential_type"],
-                key=c["key"],
-                has_value=bool(c.get("value")),
-                is_encrypted=bool(c["is_encrypted"]),
-                created_at=_serialize_timestamp(c["created_at"]),
-            )
-            for c in site["credentials"]
-        ]
+        credentials = [_credential_to_response(c) for c in site["credentials"]]
 
     return SiteResponse(
         id=site["id"],
@@ -466,6 +551,7 @@ def _site_to_response(site: dict) -> SiteResponse:
         enabled=bool(site["enabled"]),
         priority=site["priority"],
         proxy_streaming=bool(site.get("proxy_streaming", True)),
+        cookie_validation_supported=credentials_module.match_site("youtube", site["extractor_pattern"]),
         credentials=credentials,
         created_at=_serialize_timestamp(site["created_at"]),
         updated_at=_serialize_timestamp(site["updated_at"]),

@@ -54,6 +54,24 @@ class Settings(BaseModel):
         ),
     )
 
+    # PO token provider (bgutil) for YouTube
+    yt_pot_enabled: bool = Field(
+        default=False,
+        description=(
+            "Enable the bgutil PO token provider for yt-dlp. Unblocks full "
+            "formats on age-restricted videos (GVS PO token required by web "
+            "clients). Uses the bundled provider unless yt_pot_provider_url "
+            "points at an external one."
+        ),
+    )
+    yt_pot_provider_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "External bgutil POT provider base URL (http://host:4416). "
+            "Empty = use the provider bundled in the image, managed by the app."
+        ),
+    )
+
     # InnerTube (direct YouTube API)
     innertube_enabled: bool = True
 
@@ -122,6 +140,10 @@ class Settings(BaseModel):
     def effective_yt_egress_proxy(self) -> Optional[str]:
         """Return the egress proxy URL only if both configured and enabled."""
         return self.yt_egress_proxy if self.yt_egress_proxy_enabled and self.yt_egress_proxy else None
+
+    def effective_pot_provider_url(self) -> Optional[str]:
+        """Return the external POT provider URL, or None (bundled provider implied)."""
+        return self.yt_pot_provider_url or None
 
     def effective_ip_family(self) -> str:
         """Return the forced IP family, or "auto" while the egress proxy is active.

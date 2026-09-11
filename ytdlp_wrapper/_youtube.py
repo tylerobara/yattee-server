@@ -7,8 +7,8 @@ import urllib.parse
 from typing import List, Optional
 
 from ytdlp_wrapper._cache import get_channel_cache, get_search_cache, get_video_cache
-from ytdlp_wrapper._core import run_ytdlp
-from ytdlp_wrapper._sanitize import sanitize_channel_id, sanitize_playlist_id, sanitize_video_id
+from ytdlp_wrapper._core import run_ytdlp, run_ytdlp_ex
+from ytdlp_wrapper._sanitize import YtDlpError, sanitize_channel_id, sanitize_playlist_id, sanitize_video_id
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,46 @@ def build_search_sp(
     return base64.b64encode(data).decode() if data else None
 
 
+# yt-dlp error fragments that point at the cookie jar rather than the video
+_AUTH_FAILURE_MARKERS = (
+    "sign in to confirm",
+    "the page needs to be reloaded",
+    "cookies are no longer valid",
+    "login required",
+)
+
+
+def _has_adaptive_formats(info: dict) -> bool:
+    """True if yt-dlp returned at least one video-only (DASH) format.
+
+    Mirrors the muxed/adaptive split in converters._formats: a logged-out
+    jar typically yields only itag 18 (muxed 360p) and storyboards.
+    """
+    for fmt in info.get("formats") or []:
+        if fmt.get("ext") == "mhtml" or fmt.get("vcodec") == "images":
+            continue
+        has_video = fmt.get("vcodec") not in (None, "none")
+        has_audio = fmt.get("acodec") not in (None, "none")
+        if has_video and not has_audio:
+            return True
+    return False
+
+
+def _looks_like_auth_failure(message: str) -> bool:
+    lower = message.lower()
+    return any(marker in lower for marker in _AUTH_FAILURE_MARKERS)
+
+
 async def get_video_info(video_id: str, use_cache: bool = True) -> dict:
-    """Get full video info including formats."""
+    """Get full video info including formats.
+
+    If account cookies were used and the run failed with a sign-in style
+    error or came back without adaptive formats, retry once anonymously.
+    A retry that does better is evidence the jar is rotated: it is
+    reported to cookie_health, which marks the row stale past a threshold.
+    """
+    import cookie_health
+
     video_id = sanitize_video_id(video_id)
 
     cache_key = f"video:{video_id}"
@@ -71,7 +109,7 @@ async def get_video_info(video_id: str, use_cache: bool = True) -> dict:
     if use_cache and cache_key in video_cache:
         return video_cache[cache_key]
 
-    stdout = await run_ytdlp(
+    args = (
         "-j",
         "--no-download",
         "--no-warnings",
@@ -81,7 +119,33 @@ async def get_video_info(video_id: str, use_cache: bool = True) -> dict:
         f"https://www.youtube.com/watch?v={video_id}",
     )
 
-    info = json.loads(stdout)
+    info: Optional[dict] = None
+    cookie_ids: List[int] = []
+    try:
+        run = await run_ytdlp_ex(*args)
+        cookie_ids = run.cookie_ids
+        info = json.loads(run.stdout)
+        if cookie_ids and not _has_adaptive_formats(info):
+            logger.info(f"[Video] {video_id}: no adaptive formats with cookies {cookie_ids}; retrying anonymously")
+            retry = await run_ytdlp_ex(*args, use_credentials=False)
+            retry_info = json.loads(retry.stdout)
+            if _has_adaptive_formats(retry_info):
+                cookie_health.record_failure(cookie_ids, f"{video_id}: adaptive formats only without cookies")
+                info = retry_info
+            else:
+                logger.info(f"[Video] {video_id}: anonymous retry also lacks adaptive formats; keeping cookie result")
+    except YtDlpError as e:
+        cookie_ids = e.cookie_ids
+        if not cookie_ids or not _looks_like_auth_failure(str(e)):
+            raise
+        logger.info(f"[Video] {video_id}: auth-style failure with cookies {cookie_ids}; retrying anonymously")
+        try:
+            retry = await run_ytdlp_ex(*args, use_credentials=False)
+        except YtDlpError:
+            raise e
+        info = json.loads(retry.stdout)
+        cookie_health.record_failure(cookie_ids, f"{video_id}: {str(e)[:120]}")
+
     video_cache[cache_key] = info
     return info
 

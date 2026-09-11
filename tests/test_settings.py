@@ -172,6 +172,19 @@ class TestSettingsModel:
         s = Settings(yt_ip_family="ipv6", yt_egress_proxy="http://proxy:8080", yt_egress_proxy_enabled=False)
         assert s.effective_ip_family() == "ipv6"
 
+    def test_pot_defaults(self):
+        """Test POT provider settings defaults."""
+        s = Settings()
+        assert s.yt_pot_enabled is False
+        assert s.yt_pot_provider_url is None
+
+    def test_effective_pot_provider_url(self):
+        """Test that empty/None external URL means bundled provider (None)."""
+        assert Settings().effective_pot_provider_url() is None
+        assert Settings(yt_pot_provider_url="").effective_pot_provider_url() is None
+        s = Settings(yt_pot_provider_url="http://pot-host:4416")
+        assert s.effective_pot_provider_url() == "http://pot-host:4416"
+
     def test_invidious_instance_optional(self):
         """Test that invidious_instance is optional."""
         s = Settings()

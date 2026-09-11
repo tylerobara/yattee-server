@@ -2,12 +2,35 @@
 
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from settings import get_settings
 from ytdlp_wrapper._sanitize import YtDlpError, is_valid_url
 
 logger = logging.getLogger(__name__)
+
+
+def ytdlp_pot_args(s) -> List[str]:
+    """PO token provider args from settings.
+
+    The bgutil plugin is always installed (requirements.txt), so when POT is
+    disabled we pass fetch_pot=never to stop the plugin from pinging its
+    default 127.0.0.1:4416 on every call. When enabled, the base_url is only
+    emitted while a provider is actually reachable (external URL configured,
+    or the bundled process reports healthy) — otherwise every yt-dlp call
+    would pay for a failing ping.
+    """
+    if not s.yt_pot_enabled:
+        return ["--extractor-args", "youtube:fetch_pot=never"]
+    url = s.effective_pot_provider_url()
+    if url:
+        return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={url}"]
+    import pot_provider  # late import: settings <-> pot_provider cycle
+
+    if pot_provider.manager.is_healthy():
+        return ["--extractor-args", f"youtubepot-bgutilhttp:base_url={pot_provider.DEFAULT_BASE_URL}"]
+    return []
 
 
 def ytdlp_network_args(s) -> List[str]:
@@ -25,6 +48,7 @@ def ytdlp_network_args(s) -> List[str]:
         args.append("--force-ipv6")
     elif family == "ipv4":
         args.append("--force-ipv4")
+    args.extend(ytdlp_pot_args(s))
     return args
 
 
@@ -44,19 +68,38 @@ def _separate_flags_and_urls(args: tuple) -> Tuple[List[str], List[str]]:
     return flags, urls
 
 
+@dataclass
+class YtDlpRun:
+    """Result of a yt-dlp run, with the cookie credential ids that were injected."""
+
+    stdout: str
+    stderr: str = ""
+    cookie_ids: List[int] = field(default_factory=list)
+
+
 async def run_ytdlp(*args: str, timeout: Optional[int] = None, url: Optional[str] = None) -> str:
-    """Run yt-dlp with given arguments and return stdout.
+    """Run yt-dlp with given arguments and return stdout. See run_ytdlp_ex."""
+    run = await run_ytdlp_ex(*args, timeout=timeout, url=url)
+    return run.stdout
+
+
+async def run_ytdlp_ex(
+    *args: str, timeout: Optional[int] = None, url: Optional[str] = None, use_credentials: bool = True
+) -> YtDlpRun:
+    """Run yt-dlp with given arguments and return stdout/stderr plus cookie attribution.
 
     Security: URLs are automatically separated from flags and placed after '--'
     to prevent command injection via URLs starting with '-'.
+
+    When account cookies are injected, --no-warnings is dropped so yt-dlp's
+    "cookies are no longer valid" warning reaches stderr, where
+    cookie_health can act on it (stdout JSON is unaffected).
 
     Args:
         *args: yt-dlp arguments
         timeout: Optional timeout in seconds
         url: Optional URL hint for credential lookup (auto-detected from args if not provided)
-
-    Returns:
-        stdout from yt-dlp
+        use_credentials: Set False to run anonymously (retry path for stale cookies)
     """
     s = get_settings()
     timeout = timeout or s.ytdlp_timeout
@@ -76,17 +119,22 @@ async def run_ytdlp(*args: str, timeout: Optional[int] = None, url: Optional[str
     # Get credentials for this URL
     cred_args = []
     temp_files = []
+    cookie_ids: List[int] = []
 
-    if url:
+    if url and use_credentials:
         try:
             # Import here to avoid circular imports
             import credentials
 
-            cred_args, temp_files = await credentials.get_credentials_for_url(url)
+            resolved = await credentials.get_credentials_for_url(url)
+            cred_args, temp_files, cookie_ids = resolved.args, resolved.temp_files, resolved.cookie_ids
             if cred_args:
                 logger.debug(f"Injecting {len(cred_args)} credential args for URL: {url}")
         except (ValueError, KeyError, OSError) as e:
             logger.warning(f"Failed to load credentials for {url}: {e}")
+
+    if cookie_ids and "--no-warnings" in flags:
+        flags = [f for f in flags if f != "--no-warnings"]
 
     # Build final args: network (proxy/IP family) + credentials + flags + '--' + urls
     # The '--' separator prevents URLs from being interpreted as flags
@@ -109,7 +157,7 @@ async def run_ytdlp(*args: str, timeout: Optional[int] = None, url: Optional[str
             import credentials
 
             credentials.cleanup_temp_files(temp_files)
-        raise YtDlpError(f"yt-dlp timed out after {timeout} seconds")
+        raise YtDlpError(f"yt-dlp timed out after {timeout} seconds", cookie_ids=cookie_ids)
 
     # Clean up temp files
     if temp_files:
@@ -117,12 +165,18 @@ async def run_ytdlp(*args: str, timeout: Optional[int] = None, url: Optional[str
 
         credentials.cleanup_temp_files(temp_files)
 
+    stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
+    if cookie_ids:
+        import cookie_health
+
+        cookie_health.inspect_ytdlp_stderr(stderr_text, cookie_ids)
+
     if proc.returncode != 0:
-        error_msg = stderr.decode().strip() if stderr else "Unknown error"
+        error_msg = stderr_text or "Unknown error"
         logger.error(f"yt-dlp failed (exit code {proc.returncode}) for URL: {url}")
         logger.error(f"yt-dlp stderr: {error_msg}")
-        raise YtDlpError(f"yt-dlp failed: {error_msg}")
+        raise YtDlpError(f"yt-dlp failed: {error_msg}", stderr=stderr_text, cookie_ids=cookie_ids)
 
     logger.debug(f"yt-dlp succeeded for URL: {url}")
 
-    return stdout.decode()
+    return YtDlpRun(stdout=stdout.decode(), stderr=stderr_text, cookie_ids=cookie_ids)

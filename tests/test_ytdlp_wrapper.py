@@ -17,6 +17,7 @@ from ytdlp_wrapper import (
     sanitize_playlist_id,
     sanitize_video_id,
     ytdlp_network_args,
+    ytdlp_pot_args,
 )
 
 # =============================================================================
@@ -389,34 +390,89 @@ class TestYtDlpError:
 # =============================================================================
 
 
+# With POT disabled (the default), every arg list ends with fetch_pot=never
+# so the always-installed bgutil plugin doesn't ping 127.0.0.1 per call
+POT_DISABLED_ARGS = ["--extractor-args", "youtube:fetch_pot=never"]
+
+
 class TestYtdlpNetworkArgs:
     """Tests for network arg injection (egress proxy + forced IP family)."""
 
     def test_no_proxy_no_family(self):
-        """Defaults produce no network args."""
-        assert ytdlp_network_args(Settings()) == []
+        """Defaults produce only the POT-disabled suppression args."""
+        assert ytdlp_network_args(Settings()) == POT_DISABLED_ARGS
 
     def test_force_ipv6(self):
         """Forced IPv6 without proxy adds --force-ipv6."""
-        assert ytdlp_network_args(Settings(yt_ip_family="ipv6")) == ["--force-ipv6"]
+        assert ytdlp_network_args(Settings(yt_ip_family="ipv6")) == ["--force-ipv6"] + POT_DISABLED_ARGS
 
     def test_force_ipv4(self):
         """Forced IPv4 without proxy adds --force-ipv4."""
-        assert ytdlp_network_args(Settings(yt_ip_family="ipv4")) == ["--force-ipv4"]
+        assert ytdlp_network_args(Settings(yt_ip_family="ipv4")) == ["--force-ipv4"] + POT_DISABLED_ARGS
 
     def test_proxy_only(self):
         """Active proxy adds --proxy and nothing else."""
         s = Settings(yt_egress_proxy="http://proxy:8080", yt_egress_proxy_enabled=True)
-        assert ytdlp_network_args(s) == ["--proxy", "http://proxy:8080"]
+        assert ytdlp_network_args(s) == ["--proxy", "http://proxy:8080"] + POT_DISABLED_ARGS
 
     def test_proxy_suppresses_family(self):
         """Active proxy suppresses the forced family flag."""
         s = Settings(yt_egress_proxy="http://proxy:8080", yt_egress_proxy_enabled=True, yt_ip_family="ipv6")
         args = ytdlp_network_args(s)
-        assert args == ["--proxy", "http://proxy:8080"]
+        assert args == ["--proxy", "http://proxy:8080"] + POT_DISABLED_ARGS
         assert "--force-ipv6" not in args
 
     def test_disabled_proxy_keeps_family(self):
         """Disabled proxy lets the forced family flag through."""
         s = Settings(yt_egress_proxy="http://proxy:8080", yt_egress_proxy_enabled=False, yt_ip_family="ipv6")
-        assert ytdlp_network_args(s) == ["--force-ipv6"]
+        assert ytdlp_network_args(s) == ["--force-ipv6"] + POT_DISABLED_ARGS
+
+
+# =============================================================================
+# Tests for ytdlp_pot_args
+# =============================================================================
+
+
+class TestYtdlpPotArgs:
+    """Tests for PO token provider arg injection."""
+
+    def test_disabled_suppresses_plugin(self):
+        """POT disabled emits fetch_pot=never."""
+        assert ytdlp_pot_args(Settings()) == POT_DISABLED_ARGS
+        assert ytdlp_pot_args(Settings(yt_pot_enabled=False)) == POT_DISABLED_ARGS
+
+    def test_external_url(self):
+        """External provider URL is passed as base_url regardless of bundled state."""
+        s = Settings(yt_pot_enabled=True, yt_pot_provider_url="http://pot-host:4416")
+        assert ytdlp_pot_args(s) == ["--extractor-args", "youtubepot-bgutilhttp:base_url=http://pot-host:4416"]
+
+    def test_bundled_healthy(self, monkeypatch):
+        """Healthy bundled provider gets the default base_url."""
+        import pot_provider
+
+        monkeypatch.setattr(pot_provider.manager, "is_healthy", lambda: True)
+        s = Settings(yt_pot_enabled=True)
+        assert ytdlp_pot_args(s) == [
+            "--extractor-args",
+            f"youtubepot-bgutilhttp:base_url={pot_provider.DEFAULT_BASE_URL}",
+        ]
+
+    def test_bundled_unhealthy(self, monkeypatch):
+        """Enabled but unhealthy bundled provider emits nothing (no per-call pings)."""
+        import pot_provider
+
+        monkeypatch.setattr(pot_provider.manager, "is_healthy", lambda: False)
+        assert ytdlp_pot_args(Settings(yt_pot_enabled=True)) == []
+
+    def test_pot_args_coexist_with_proxy(self, monkeypatch):
+        """POT base_url is appended after the proxy args."""
+        import pot_provider
+
+        monkeypatch.setattr(pot_provider.manager, "is_healthy", lambda: True)
+        s = Settings(yt_pot_enabled=True, yt_egress_proxy="http://proxy:8080", yt_egress_proxy_enabled=True)
+        assert ytdlp_network_args(s) == [
+            "--proxy",
+            "http://proxy:8080",
+            "--extractor-args",
+            f"youtubepot-bgutilhttp:base_url={pot_provider.DEFAULT_BASE_URL}",
+        ]

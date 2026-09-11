@@ -1542,3 +1542,74 @@ class TestMergeStreamUrls:
         ]
         fs, _af = merge_stream_urls(it, ytdlp)
         assert fs[0]["url"] == "https://yt/18"
+
+    def test_multi_audio_tracks_join_by_xtags(self):
+        """Multi-language videos: yt-dlp names audio '140-N' and the InnerTube
+        variants share an itag, so the join must use the xtags language marker."""
+        from innertube import merge_stream_urls
+
+        it = {
+            "formatStreams": [],
+            "adaptiveFormats": [
+                {"itag": "140", "url": "", "_xtags": {"acont": "dubbed-auto", "lang": "pl"}},
+                {"itag": "140", "url": "", "_xtags": {"acont": "original", "lang": "en-US"}},
+                # DRC and vb=1 variants are not exposed by yt-dlp -> dropped, not duplicated
+                {"itag": "140", "url": "", "_xtags": {"acont": "original", "drc": "1", "lang": "en-US"}},
+                {"itag": "140", "url": "", "_xtags": {"acont": "original", "lang": "en-US", "vb": "1"}},
+                {"itag": "137", "url": "", "_xtags": {}},
+            ],
+        }
+        ytdlp = [
+            {"format_id": "140-0", "url": "https://yt/140?xtags=acont%3Ddubbed-auto%3Alang%3Dpl"},
+            {"format_id": "140-1", "url": "https://yt/140?xtags=acont%3Doriginal%3Alang%3Den-US"},
+            {"format_id": "137", "url": "https://yt/137"},
+        ]
+        _fs, af = merge_stream_urls(it, ytdlp)
+        assert [(f["itag"], f["url"]) for f in af] == [
+            ("140", "https://yt/140?xtags=acont%3Ddubbed-auto%3Alang%3Dpl"),
+            ("140", "https://yt/140?xtags=acont%3Doriginal%3Alang%3Den-US"),
+            ("137", "https://yt/137"),
+        ]
+        assert all("_xtags" not in f for f in af)
+
+    def test_bare_itag_does_not_match_tagged_ytdlp_variant(self):
+        from innertube import merge_stream_urls
+
+        it = {"formatStreams": [], "adaptiveFormats": [{"itag": "140", "url": "", "_xtags": {}}]}
+        ytdlp = [{"format_id": "140-0", "url": "https://yt/140?xtags=lang%3Dpl"}]
+        _fs, af = merge_stream_urls(it, ytdlp)
+        assert af == []
+
+
+class TestDecodeXtags:
+    def test_decodes_protobuf_pairs(self):
+        from innertube._converters import _decode_xtags
+
+        assert _decode_xtags("ChEKBWFjb250EghvcmlnaW5hbAoNCgRsYW5nEgVlbi1VUw") == {
+            "acont": "original",
+            "lang": "en-US",
+        }
+        assert _decode_xtags("ChEKBWFjb250EghvcmlnaW5hbAoICgNkcmMSATEKDQoEbGFuZxIFZW4tVVM") == {
+            "acont": "original",
+            "drc": "1",
+            "lang": "en-US",
+        }
+
+    def test_garbage_is_empty(self):
+        from innertube._converters import _decode_xtags
+
+        assert _decode_xtags(None) == {}
+        assert _decode_xtags("") == {}
+        assert _decode_xtags("!!!not-base64") == {}
+        assert _decode_xtags("AAAA") == {}
+
+    def test_format_to_invidious_carries_xtags(self):
+        from innertube._converters import _format_to_invidious
+
+        out = _format_to_invidious({
+            "itag": 140,
+            "mimeType": 'audio/mp4; codecs="mp4a.40.2"',
+            "xtags": "ChEKBWFjb250EghvcmlnaW5hbAoNCgRsYW5nEgVlbi1VUw",
+        })
+        assert out["_xtags"] == {"acont": "original", "lang": "en-US"}
+        assert _format_to_invidious({"itag": 137, "mimeType": "video/mp4"})["_xtags"] == {}
